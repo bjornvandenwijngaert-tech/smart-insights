@@ -43,9 +43,11 @@ function setupNav() {
   document.querySelectorAll(".nav-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
       document.querySelectorAll(".nav-btn").forEach(function (b) { b.classList.remove("active"); });
-      document.querySelectorAll(".tab").forEach(function (t) { t.classList.remove("active"); });
+      document.querySelectorAll(".tab").forEach(function (t) { t.classList.remove("active"); t.classList.add("hidden"); });
       btn.classList.add("active");
-      document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+      var target = document.getElementById("tab-" + btn.dataset.tab);
+      target.classList.remove("hidden");
+      target.classList.add("active");
     });
   });
 }
