@@ -116,6 +116,13 @@ body {
   font-weight: 500;
 }
 
+.version-badge {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: 6px;
+  font-weight: 400;
+}
+
 /* ─── Loading ──────────────────────────────────────────────────────────────── */
 .loading-screen {
   display: flex;

@@ -11,21 +11,25 @@ const state = {
 // ─── MyGeotab addin lifecycle ──────────────────────────────────────────────
 if (typeof geotab === "undefined") { var geotab = { addin: {} }; }
 
-geotab.addin.SmartInsights = function () {
+geotab.addin.smartInsights = function () {
   return {
     initialize: function (api, freshState, callback) {
-      state.api = api;
+      try {
+        state.api = api;
 
-      if (freshState && freshState.database) {
-        document.getElementById("db-name").textContent = freshState.database;
+        if (freshState && freshState.database) {
+          document.getElementById("db-name").textContent = freshState.database;
+        }
+
+        setupNav();
+        setupReports();
+        restoreDashboard();
+        document.getElementById("loading").classList.add("hidden");
+        document.getElementById("main").classList.remove("hidden");
+        loadSuggestions();
+      } catch (err) {
+        showError("Init error: " + err.message);
       }
-
-      setupNav();
-      setupReports();
-      restoreDashboard();
-      document.getElementById("loading").classList.add("hidden");
-      document.getElementById("main").classList.remove("hidden");
-      loadSuggestions();
 
       if (callback) callback();
     },
