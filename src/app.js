@@ -16,19 +16,18 @@ geotab.addin.SmartInsights = function () {
     initialize: function (api, freshState, callback) {
       state.api = api;
 
-      api.getSession(function (session) {
-        document.getElementById("db-name").textContent = session.database;
-        setupNav();
-        setupReports();
-        restoreDashboard();
-        document.getElementById("loading").classList.add("hidden");
-        document.getElementById("main").classList.remove("hidden");
-        loadSuggestions();
-        if (callback) callback();
-      }, function (err) {
-        showError("Failed to connect: " + (err.message || err));
-        if (callback) callback();
-      });
+      if (freshState && freshState.database) {
+        document.getElementById("db-name").textContent = freshState.database;
+      }
+
+      setupNav();
+      setupReports();
+      restoreDashboard();
+      document.getElementById("loading").classList.add("hidden");
+      document.getElementById("main").classList.remove("hidden");
+      loadSuggestions();
+
+      if (callback) callback();
     },
     focus: function (api, freshState) {},
     blur:  function () {}
