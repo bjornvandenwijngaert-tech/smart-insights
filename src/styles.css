@@ -218,14 +218,14 @@ body {
 
 /* ─── Dashboard grid ───────────────────────────────────────────────────────── */
 .dashboard-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-  gap: 16px;
-  min-height: 180px;
+  position: relative;
+  min-height: 600px;
+  width: 100%;
 }
 
 .grid-empty {
-  grid-column: 1 / -1;
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -243,24 +243,41 @@ body {
 
 /* ─── Widget ────────────────────────────────────────────────────────────────── */
 .widget {
+  position: absolute;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
-  overflow: hidden;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  min-width: 280px;
+  min-height: 220px;
 }
+
+.widget:hover { box-shadow: 0 4px 20px rgba(0,0,0,.12); }
 
 .widget-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 13px 16px 10px;
+  gap: 8px;
+  padding: 11px 14px 9px;
   border-bottom: 1px solid var(--border);
+  cursor: grab;
+  user-select: none;
 }
 
-.widget-title { font-weight: 600; font-size: 13px; color: var(--text); }
+.widget-header:active { cursor: grabbing; }
+
+.widget-drag-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  letter-spacing: -2px;
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.widget-title { font-weight: 600; font-size: 13px; color: var(--text); flex: 1; }
 
 .widget-remove {
   background: none;
@@ -272,11 +289,61 @@ body {
   border-radius: 4px;
   transition: background .12s, color .12s;
   font-family: var(--font);
+  flex-shrink: 0;
 }
 
 .widget-remove:hover { background: #fee2e2; color: var(--red); }
-.widget-body { padding: 14px 16px 18px; flex: 1; min-height: 200px; }
-.widget-body canvas { width: 100% !important; }
+
+.widget-body {
+  padding: 12px 14px 14px;
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.widget-body canvas { width: 100% !important; height: 100% !important; }
+
+/* Resize handle */
+.widget-resize {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  z-index: 10;
+}
+
+.widget-resize::before,
+.widget-resize::after {
+  content: "";
+  position: absolute;
+  background: var(--border);
+  border-radius: 2px;
+  right: 4px;
+  bottom: 4px;
+}
+
+.widget-resize::before {
+  width: 8px;
+  height: 2px;
+  bottom: 8px;
+}
+
+.widget-resize::after {
+  width: 2px;
+  height: 8px;
+  right: 8px;
+}
+
+/* Two-line L-shape resize indicator */
+.widget-resize {
+  background:
+    linear-gradient(to bottom, transparent 60%, var(--border) 60%) right 4px bottom 4px / 2px 8px no-repeat,
+    linear-gradient(to right,  transparent 60%, var(--border) 60%) right 4px bottom 4px / 8px 2px no-repeat,
+    linear-gradient(to bottom, transparent 60%, var(--border) 60%) right 4px bottom 9px / 2px 4px no-repeat,
+    linear-gradient(to right,  transparent 60%, var(--border) 60%) right 9px bottom 4px / 4px 2px no-repeat;
+}
 
 /* ─── Report summary cards ──────────────────────────────────────────────────── */
 .report-summary {

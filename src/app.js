@@ -1,11 +1,13 @@
 "use strict";
 
 // ─── State ─────────────────────────────────────────────────────────────────
-const state = {
+var state = {
   api: null,
   reportData: [],
   widgets: [],
   suggestions: [],
+  nextX: 0,
+  nextY: 0,
 };
 
 // ─── MyGeotab addin lifecycle ──────────────────────────────────────────────
@@ -16,11 +18,9 @@ geotab.addin.smartInsights = function () {
     initialize: function (api, freshState, callback) {
       try {
         state.api = api;
-
         if (freshState && freshState.database) {
           document.getElementById("db-name").textContent = freshState.database;
         }
-
         setupNav();
         setupReports();
         restoreDashboard();
@@ -30,10 +30,9 @@ geotab.addin.smartInsights = function () {
       } catch (err) {
         showError("Init error: " + err.message);
       }
-
       if (callback) callback();
     },
-    focus: function (api, freshState) {},
+    focus: function () {},
     blur:  function () {}
   };
 };
@@ -69,15 +68,12 @@ function runReport() {
   var to     = document.getElementById("filter-to").value;
   var output = document.getElementById("report-output");
   var btn    = document.getElementById("run-report");
-
   if (!from || !to) { alert("Please select a date range."); return; }
-
   btn.disabled = true;
   btn.textContent = "Loading...";
   output.innerHTML = "<p class='placeholder'>Fetching data...</p>";
   document.getElementById("report-summary").classList.add("hidden");
   document.getElementById("export-csv").classList.add("hidden");
-
   if (type === "trips") {
     runTripsReport(from, to, function () {
       btn.disabled = false;
@@ -89,22 +85,15 @@ function runReport() {
 function runTripsReport(from, to, done) {
   var fromDate = new Date(from + "T00:00:00").toISOString();
   var toDate   = new Date(to   + "T23:59:59").toISOString();
-
   apiCall("Get", { typeName: "Device", search: {} }, function (devices) {
     var deviceMap = {};
     devices.forEach(function (d) { deviceMap[d.id] = d.name; });
-
-    apiCall("Get", {
-      typeName: "Trip",
-      search: { fromDate: fromDate, toDate: toDate }
-    }, function (trips) {
+    apiCall("Get", { typeName: "Trip", search: { fromDate: fromDate, toDate: toDate } }, function (trips) {
       state.reportData = trips;
-
       var totalKm   = trips.reduce(function (s, t) { return s + (t.distance || 0); }, 0) / 1000;
       var totalMins = trips.reduce(function (s, t) { return s + durationMins(t.start, t.stop); }, 0);
       var vehicles  = {};
       trips.forEach(function (t) { if (t.device) vehicles[t.device.id] = 1; });
-
       var summaryEl = document.getElementById("report-summary");
       summaryEl.innerHTML =
         summaryCard("Total Distance", totalKm.toFixed(1), "km") +
@@ -112,15 +101,9 @@ function runTripsReport(from, to, done) {
         summaryCard("Trips",          trips.length, "") +
         summaryCard("Active Vehicles", Object.keys(vehicles).length, "");
       summaryEl.classList.remove("hidden");
-
       var output = document.getElementById("report-output");
-      if (trips.length === 0) {
-        output.innerHTML = "<p class='placeholder'>No trips found for this period.</p>";
-        done(); return;
-      }
-
+      if (trips.length === 0) { output.innerHTML = "<p class='placeholder'>No trips found for this period.</p>"; done(); return; }
       var sorted = trips.slice().sort(function (a, b) { return new Date(b.start) - new Date(a.start); });
-
       output.innerHTML = sorted.map(function (t) {
         var vName = deviceMap[t.device && t.device.id] || (t.device && t.device.id) || "Unknown";
         var dist  = ((t.distance || 0) / 1000).toFixed(1);
@@ -133,50 +116,31 @@ function runTripsReport(from, to, done) {
               "<div class='trip-time'>" + fmtDateShort(t.start) + "<br>" + fmtTime(t.start) + " &rarr; " + fmtTime(t.stop) + "</div>" +
             "</div>" +
             "<div class='trip-meta'>" +
-              tripStat("Distance", dist + " km") +
-              tripStat("Duration", fmtMins(mins)) +
+              tripStat("Distance", dist + " km") + tripStat("Duration", fmtMins(mins)) +
               tripStat("Max Speed", (t.maximumSpeed || 0).toFixed(0) + " km/h") +
               tripStat("Avg Speed", (t.averageSpeed  || 0).toFixed(0) + " km/h") +
             "</div>" +
           "</div>"
         );
       }).join("");
-
       document.getElementById("export-csv").classList.remove("hidden");
       done();
-    }, function (err) {
-      document.getElementById("report-output").innerHTML = "<p class='placeholder' style='color:var(--red)'>Error: " + (err.message || err) + "</p>";
-      done();
-    });
-  }, function (err) {
-    document.getElementById("report-output").innerHTML = "<p class='placeholder' style='color:var(--red)'>Error loading devices: " + (err.message || err) + "</p>";
-    done();
-  });
+    }, function (err) { document.getElementById("report-output").innerHTML = "<p class='placeholder' style='color:var(--red)'>Error: " + (err.message || err) + "</p>"; done(); });
+  }, function (err) { document.getElementById("report-output").innerHTML = "<p class='placeholder' style='color:var(--red)'>Error loading devices: " + (err.message || err) + "</p>"; done(); });
 }
 
 function summaryCard(label, value, unit) {
   return "<div class='summary-card'><div class='summary-label'>" + label + "</div><div class='summary-value'>" + value + "<span class='summary-unit'>" + unit + "</span></div></div>";
 }
-
 function tripStat(label, value) {
   return "<div class='trip-stat'><span class='trip-stat-label'>" + label + "</span><span class='trip-stat-value'>" + value + "</span></div>";
 }
-
 function exportCsv() {
   if (!state.reportData.length) return;
-  var rows = [["Vehicle ID", "Driver", "Date", "Start", "Stop", "Distance (km)", "Duration", "Max Speed (km/h)", "Avg Speed (km/h)"]];
+  var rows = [["Vehicle ID","Driver","Date","Start","Stop","Distance (km)","Duration","Max Speed (km/h)","Avg Speed (km/h)"]];
   state.reportData.forEach(function (t) {
-    rows.push([
-      (t.device && t.device.id) || "",
-      t.driverName || "",
-      fmtDateShort(t.start),
-      fmtTime(t.start),
-      fmtTime(t.stop),
-      ((t.distance || 0) / 1000).toFixed(1),
-      fmtMins(durationMins(t.start, t.stop)),
-      (t.maximumSpeed || 0).toFixed(0),
-      (t.averageSpeed  || 0).toFixed(0),
-    ]);
+    rows.push([(t.device && t.device.id)||"", t.driverName||"", fmtDateShort(t.start), fmtTime(t.start), fmtTime(t.stop),
+      ((t.distance||0)/1000).toFixed(1), fmtMins(durationMins(t.start,t.stop)), (t.maximumSpeed||0).toFixed(0), (t.averageSpeed||0).toFixed(0)]);
   });
   var csv  = rows.map(function (r) { return r.join(","); }).join("\n");
   var blob = new Blob([csv], { type: "text/csv" });
@@ -188,43 +152,30 @@ function exportCsv() {
 
 // ─── Suggestions ─────────────────────────────────────────────────────────────
 function loadSuggestions() {
-  document.getElementById("refresh-suggestions").addEventListener("click", loadSuggestions);
+  var refreshBtn = document.getElementById("refresh-suggestions");
+  if (refreshBtn && !refreshBtn._bound) {
+    refreshBtn.addEventListener("click", loadSuggestions);
+    refreshBtn._bound = true;
+  }
   var list = document.getElementById("suggestions-list");
   list.innerHTML = "<p class='placeholder'>Scanning your fleet data...</p>";
-
   var toDate   = new Date();
   var fromDate = new Date();
   fromDate.setDate(toDate.getDate() - 30);
-
-  apiCall("Get", {
-    typeName: "ExceptionEvent",
-    search: { fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), includeInvalidated: false }
-  }, function (exceptions) {
+  apiCall("Get", { typeName: "ExceptionEvent", search: { fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), includeInvalidated: false } }, function (exceptions) {
     apiCall("Get", { typeName: "Rule", search: {} }, function (rules) {
       var counts = {};
-      exceptions.forEach(function (e) {
-        var id = e.rule && e.rule.id;
-        if (id) counts[id] = (counts[id] || 0) + 1;
-      });
-
+      exceptions.forEach(function (e) { var id = e.rule && e.rule.id; if (id) counts[id] = (counts[id] || 0) + 1; });
       var ruleMap = {};
       rules.forEach(function (r) { ruleMap[r.id] = r; });
-
       var ranked = Object.keys(counts)
         .map(function (id) { return { rule: ruleMap[id], count: counts[id] }; })
         .filter(function (s) { return s.rule; })
         .sort(function (a, b) { return b.count - a.count; })
         .slice(0, 8);
-
       state.suggestions = ranked;
-
-      if (ranked.length === 0) {
-        list.innerHTML = "<p class='placeholder'>No violations found in the last 30 days.</p>";
-        return;
-      }
-
+      if (ranked.length === 0) { list.innerHTML = "<p class='placeholder'>No violations found in the last 30 days.</p>"; return; }
       list.innerHTML = ranked.map(function (s, i) { return suggestionCard(s, i); }).join("");
-
       list.querySelectorAll(".btn-add").forEach(function (btn) {
         btn.addEventListener("click", function () {
           addSuggestionToDashboard(state.suggestions[parseInt(btn.dataset.idx)]);
@@ -261,20 +212,26 @@ function ruleIcon(name) {
 }
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
+var DEFAULT_W = 400;
+var DEFAULT_H = 300;
+var CASCADE   = 24;
+
 function addSuggestionToDashboard(suggestion) {
   var id    = "widget-" + Date.now();
   var title = suggestion.rule.name + " (30 days)";
-
   document.querySelectorAll(".nav-btn").forEach(function (b) { b.classList.remove("active"); });
-  document.querySelectorAll(".tab").forEach(function (t) { t.classList.remove("active"); });
+  document.querySelectorAll(".tab").forEach(function (t) { t.classList.remove("active"); t.classList.add("hidden"); });
   document.querySelector("[data-tab='dashboard']").classList.add("active");
-  document.getElementById("tab-dashboard").classList.add("active");
-
-  addWidget(id, title, suggestion);
+  var dash = document.getElementById("tab-dashboard");
+  dash.classList.remove("hidden");
+  dash.classList.add("active");
+  addWidget(id, title, suggestion, state.nextX, state.nextY, DEFAULT_W, DEFAULT_H);
+  state.nextX = (state.nextX + CASCADE) % 120;
+  state.nextY = (state.nextY + CASCADE) % 120;
   saveDashboard();
 }
 
-function addWidget(id, title, suggestion) {
+function addWidget(id, title, suggestion, x, y, w, h) {
   var grid  = document.getElementById("dashboard-grid");
   var empty = grid.querySelector(".grid-empty");
   if (empty) empty.remove();
@@ -282,12 +239,20 @@ function addWidget(id, title, suggestion) {
   var widget = document.createElement("div");
   widget.className = "widget";
   widget.id = id;
+  widget.style.left   = (x || 0) + "px";
+  widget.style.top    = (y || 0) + "px";
+  widget.style.width  = (w || DEFAULT_W) + "px";
+  widget.style.height = (h || DEFAULT_H) + "px";
+
   widget.innerHTML =
     "<div class='widget-header'>" +
+      "<span class='widget-drag-hint'>&#8942;&#8942;</span>" +
       "<span class='widget-title'>" + title + "</span>" +
       "<button class='widget-remove' title='Remove'>&#x2715;</button>" +
     "</div>" +
-    "<div class='widget-body'><canvas id='canvas-" + id + "'></canvas></div>";
+    "<div class='widget-body'><canvas id='canvas-" + id + "'></canvas></div>" +
+    "<div class='widget-resize' title='Resize'></div>";
+
   grid.appendChild(widget);
 
   widget.querySelector(".widget-remove").addEventListener("click", function () {
@@ -301,56 +266,116 @@ function addWidget(id, title, suggestion) {
     saveDashboard();
   });
 
+  var wState = { id: id, title: title, suggestion: suggestion, x: x || 0, y: y || 0, w: w || DEFAULT_W, h: h || DEFAULT_H, chart: null };
+  state.widgets.push(wState);
+
+  makeDraggable(widget, wState);
+  makeResizable(widget, wState);
+
   var canvas = document.getElementById("canvas-" + id);
   var chart  = new Chart(canvas, {
     type: "bar",
-    data: { labels: ["Loading..."], datasets: [{ data: [0], backgroundColor: "rgba(99,102,241,.7)", borderRadius: 4 }] },
-    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+    data: { labels: ["Loading..."], datasets: [{ data: [0], backgroundColor: "rgba(99,102,241,.75)", borderRadius: 4 }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      devicePixelRatio: window.devicePixelRatio || 2,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+    }
   });
-
-  state.widgets.push({ id: id, title: title, chart: chart, suggestion: suggestion });
+  wState.chart = chart;
   loadWidgetData(id, suggestion, chart);
 }
 
+// ─── Drag to move ─────────────────────────────────────────────────────────────
+function makeDraggable(widget, wState) {
+  var header = widget.querySelector(".widget-header");
+  header.addEventListener("mousedown", function (e) {
+    if (e.target.closest(".widget-remove")) return;
+    e.preventDefault();
+    var startX = e.clientX - wState.x;
+    var startY = e.clientY - wState.y;
+    header.style.cursor = "grabbing";
+    document.body.style.userSelect = "none";
+
+    function onMove(e) {
+      var grid = document.getElementById("dashboard-grid");
+      wState.x = Math.max(0, Math.min(e.clientX - startX, grid.offsetWidth - wState.w));
+      wState.y = Math.max(0, e.clientY - startY);
+      widget.style.left = wState.x + "px";
+      widget.style.top  = wState.y + "px";
+    }
+    function onUp() {
+      header.style.cursor = "grab";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      saveDashboard();
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+// ─── Resize ───────────────────────────────────────────────────────────────────
+function makeResizable(widget, wState) {
+  var handle = widget.querySelector(".widget-resize");
+  handle.addEventListener("mousedown", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    var startX = e.clientX;
+    var startY = e.clientY;
+    var startW = wState.w;
+    var startH = wState.h;
+    document.body.style.userSelect = "none";
+
+    function onMove(e) {
+      wState.w = Math.max(280, startW + (e.clientX - startX));
+      wState.h = Math.max(220, startH + (e.clientY - startY));
+      widget.style.width  = wState.w + "px";
+      widget.style.height = wState.h + "px";
+      if (wState.chart) wState.chart.resize();
+    }
+    function onUp() {
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      saveDashboard();
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+// ─── Widget data ──────────────────────────────────────────────────────────────
 function loadWidgetData(widgetId, suggestion, chart) {
   var toDate   = new Date();
   var fromDate = new Date();
   fromDate.setDate(toDate.getDate() - 30);
-
   apiCall("Get", {
     typeName: "ExceptionEvent",
-    search: {
-      fromDate: fromDate.toISOString(),
-      toDate:   toDate.toISOString(),
-      ruleSearch: { id: suggestion.rule.id },
-      includeInvalidated: false
-    }
+    search: { fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), ruleSearch: { id: suggestion.rule.id }, includeInvalidated: false }
   }, function (exceptions) {
     var buckets = {};
-    exceptions.forEach(function (e) {
-      var day = fmtDateShort(e.activeFrom);
-      buckets[day] = (buckets[day] || 0) + 1;
-    });
-
+    exceptions.forEach(function (e) { var day = fmtDateShort(e.activeFrom); buckets[day] = (buckets[day] || 0) + 1; });
     var labels = [], data = [];
     for (var i = 29; i >= 0; i--) {
-      var d = new Date();
-      d.setDate(d.getDate() - i);
+      var d = new Date(); d.setDate(d.getDate() - i);
       var key = fmtDateShort(d.toISOString());
-      labels.push(key.slice(5));
-      data.push(buckets[key] || 0);
+      labels.push(key.slice(5)); data.push(buckets[key] || 0);
     }
-
     chart.data.labels = labels;
-    chart.data.datasets = [{ label: "Violations", data: data, backgroundColor: "rgba(99,102,241,.7)", borderRadius: 4 }];
+    chart.data.datasets = [{ label: "Violations", data: data, backgroundColor: "rgba(99,102,241,.75)", borderRadius: 4 }];
     chart.options.plugins.legend.display = true;
     chart.update();
   }, function () {});
 }
 
+// ─── Persistence ──────────────────────────────────────────────────────────────
 function saveDashboard() {
   var saved = state.widgets.map(function (w) {
-    return { id: w.id, title: w.title, ruleId: w.suggestion && w.suggestion.rule && w.suggestion.rule.id, ruleName: w.suggestion && w.suggestion.rule && w.suggestion.rule.name };
+    return { id: w.id, title: w.title, ruleId: w.suggestion && w.suggestion.rule && w.suggestion.rule.id, ruleName: w.suggestion && w.suggestion.rule && w.suggestion.rule.name, x: w.x, y: w.y, w: w.w, h: w.h };
   });
   try { localStorage.setItem("smartinsights-dashboard", JSON.stringify(saved)); } catch (e) {}
 }
@@ -361,7 +386,7 @@ function restoreDashboard() {
     if (!raw) return;
     JSON.parse(raw).forEach(function (w) {
       if (!w.ruleId) return;
-      addWidget(w.id, w.title, { rule: { id: w.ruleId, name: w.ruleName } });
+      addWidget(w.id, w.title, { rule: { id: w.ruleId, name: w.ruleName } }, w.x, w.y, w.w, w.h);
     });
   } catch (e) {}
 }
@@ -370,13 +395,9 @@ function restoreDashboard() {
 function apiCall(method, params, onSuccess, onError) {
   state.api.call(method, params, onSuccess, onError || function (err) { console.error(method, err); });
 }
-
 function handleErr(container) {
-  return function (err) {
-    container.innerHTML = "<p class='placeholder' style='color:var(--red)'>Error: " + (err.message || err) + "</p>";
-  };
+  return function (err) { container.innerHTML = "<p class='placeholder' style='color:var(--red)'>Error: " + (err.message || err) + "</p>"; };
 }
-
 function fmtDateInput(d) { return d.toISOString().slice(0, 10); }
 function fmtDateShort(iso) { return iso ? new Date(iso).toISOString().slice(0, 10) : ""; }
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--"; }
