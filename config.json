@@ -1,17 +1,15 @@
 {
   "name": "Smart Insights",
-  "supportEmail": "bjornvandenwijngaert@geotab.com",
+  "supportEmail": "bjornvandenwijngaert@geotabsmb.com",
   "version": "1.0.0",
-  "defaultPage": "dashboard",
   "items": [
     {
-      "url": "index.html",
-      "path": "ActivityLink/",
+      "url": "https://bjornvandenwijngaert-tech.github.io/smart-insights/index.html",
+      "path": "SmartInsights/",
       "menuName": {
         "en": "Smart Insights"
       },
-      "icon": "images/icon.svg"
+      "icon": ""
     }
-  ],
-  "isSigned": false
+  ]
 }
