@@ -1,0 +1,17 @@
+{
+  "name": "Smart Insights",
+  "supportEmail": "bjornvandenwijngaert@geotab.com",
+  "version": "1.0.0",
+  "defaultPage": "dashboard",
+  "items": [
+    {
+      "url": "index.html",
+      "path": "ActivityLink/",
+      "menuName": {
+        "en": "Smart Insights"
+      },
+      "icon": "images/icon.svg"
+    }
+  ],
+  "isSigned": false
+}

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Insights</title>
+  <link rel="stylesheet" href="src/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div id="app">
+
+    <!-- Header -->
+    <header class="header">
+      <div class="header-brand">
+        <span class="header-logo">&#9889;</span>
+        <span class="header-title">Smart Insights</span>
+      </div>
+      <nav class="nav">
+        <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
+        <button class="nav-btn" data-tab="reports">Reports</button>
+        <button class="nav-btn" data-tab="suggestions">Suggestions</button>
+      </nav>
+      <div class="header-meta">
+        <span id="db-name" class="db-badge"></span>
+      </div>
+    </header>
+
+    <!-- Loading state -->
+    <div id="loading" class="loading-screen">
+      <div class="spinner"></div>
+      <p>Connecting to MyGeotab...</p>
+    </div>
+
+    <!-- Main content -->
+    <main id="main" class="main hidden">
+
+      <!-- Dashboard tab -->
+      <section id="tab-dashboard" class="tab active">
+        <div class="tab-toolbar">
+          <h2 class="tab-title">Dashboard</h2>
+          <span class="tab-hint">Drag and resize widgets to arrange your layout.</span>
+        </div>
+        <div id="dashboard-grid" class="dashboard-grid">
+          <div class="grid-empty">
+            <p>No widgets yet.</p>
+            <p>Head to <strong>Suggestions</strong> to add your first chart.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Reports tab -->
+      <section id="tab-reports" class="tab hidden">
+        <div class="tab-toolbar">
+          <h2 class="tab-title">Reports</h2>
+          <div class="report-filters">
+            <select id="report-type" class="select">
+              <option value="trips">Daily Trips</option>
+              <option value="exceptions" disabled>Exceptions (coming soon)</option>
+              <option value="fuel" disabled>Fuel (coming soon)</option>
+            </select>
+            <input type="date" id="filter-from" class="input-date" />
+            <input type="date" id="filter-to" class="input-date" />
+            <button id="run-report" class="btn btn-primary">Run</button>
+            <button id="export-csv" class="btn btn-secondary hidden">Export CSV</button>
+          </div>
+        </div>
+        <div id="report-summary" class="report-summary hidden"></div>
+        <div id="report-output" class="report-output">
+          <p class="report-placeholder">Select a report type and date range, then click Run.</p>
+        </div>
+      </section>
+
+      <!-- Suggestions tab -->
+      <section id="tab-suggestions" class="tab hidden">
+        <div class="tab-toolbar">
+          <h2 class="tab-title">Suggestions</h2>
+          <span class="tab-hint">Based on your fleet's activity over the last 30 days.</span>
+          <button id="refresh-suggestions" class="btn btn-secondary">Refresh</button>
+        </div>
+        <div id="suggestions-list" class="suggestions-list">
+          <p class="report-placeholder">Loading suggestions...</p>
+        </div>
+      </section>
+
+    </main>
+
+  </div>
+
+  <script src="src/app.js"></script>
+</body>
+</html>
