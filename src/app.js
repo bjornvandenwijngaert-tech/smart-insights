@@ -1525,17 +1525,15 @@ function exportActivityExcel() {
   wb.creator = "Smart Insights";
   wb.created = new Date();
 
-  // ── Summary sheet ─────────────────────────────────────────────────────────
+  // ── Summary sheet — KPIs left (cols A-B), chart right (cols D-K) ──────────
   var summarySheet = wb.addWorksheet("Summary");
-  summarySheet.columns = [{ width: 38 }, { width: 26 }];
+  summarySheet.columns = [
+    { width: 36 }, { width: 24 }, { width: 4 },  // A, B, C (spacer)
+    { width: 18 }, { width: 18 }, { width: 18 }, { width: 18 },
+    { width: 18 }, { width: 18 }, { width: 18 }   // D-J (chart area)
+  ];
 
-  // Embed chart image (spans rows 1–22, cols A–B)
-  var imgId = wb.addImage({ base64: chartBase64, extension: "png" });
-  summarySheet.addImage(imgId, { tl: { col: 0, row: 0 }, br: { col: 6, row: 20 } });
-
-  // Leave 21 rows for the chart, then add KPI table
-  for (var ri = 0; ri < 20; ri++) summarySheet.addRow([]);
-
+  // KPI table — written first so row indices are known
   var titleRow = summarySheet.addRow(["Activity Report — " + from + " to " + to]);
   titleRow.font = { bold: true, size: 13 };
   summarySheet.addRow([]);
@@ -1554,6 +1552,10 @@ function exportActivityExcel() {
     ["Vehicles in Report", vids.length]
   ];
   kpiData.forEach(function (r) { summarySheet.addRow(r); });
+
+  // Chart image — placed to the right of the KPI table (col D = index 3, row 0)
+  var imgId = wb.addImage({ base64: chartBase64, extension: "png" });
+  summarySheet.addImage(imgId, { tl: { col: 3, row: 0 }, br: { col: 10, row: 20 } });
 
   // ── Per-vehicle sheets ────────────────────────────────────────────────────
   var extraHeaders  = activityEngineColHeaders(cols);
