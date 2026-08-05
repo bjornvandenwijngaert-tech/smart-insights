@@ -4,8 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Smart Insights</title>
-  <link rel="stylesheet" href="src/styles.css?v=1.0.3" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="src/styles.css?v=2.7.0" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 </head>
 <body>
   <div id="app">
@@ -28,10 +33,11 @@
         <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
         <button class="nav-btn" data-tab="reports">Reports</button>
         <button class="nav-btn" data-tab="suggestions">Suggestions</button>
+        <button class="nav-btn" data-tab="map">Map</button>
       </nav>
       <div class="header-meta">
         <span id="db-name" class="db-badge"></span>
-        <span class="version-badge">v1.0.3</span>
+        <span class="version-badge">v2.7.0</span>
       </div>
     </header>
 
@@ -48,12 +54,15 @@
       <section id="tab-dashboard" class="tab active">
         <div class="tab-toolbar">
           <h2 class="tab-title">Dashboard</h2>
-          <span class="tab-hint">Drag and resize widgets to arrange your layout.</span>
+          <span class="tab-hint" id="dashboard-hint">Click a widget to view details. Use Edit Layout to rearrange.</span>
+          <button id="add-widget-btn" class="btn btn-primary">+ Add Widget</button>
+          <button id="edit-layout-btn" class="btn btn-secondary">Edit Layout</button>
+          <button id="done-layout-btn" class="btn btn-primary hidden">Done</button>
         </div>
         <div id="dashboard-grid" class="dashboard-grid">
           <div class="grid-empty">
             <p>No widgets yet.</p>
-            <p>Head to <strong>Suggestions</strong> to add your first chart.</p>
+            <p>Click <strong>+ Add Widget</strong> or head to <strong>Suggestions</strong> to add your first chart.</p>
           </div>
         </div>
       </section>
@@ -65,13 +74,40 @@
           <div class="report-filters">
             <select id="report-type" class="select">
               <option value="trips">Daily Trips</option>
-              <option value="exceptions" disabled>Exceptions (coming soon)</option>
-              <option value="fuel" disabled>Fuel (coming soon)</option>
+              <option value="carbon-monthly">Monthly Carbon</option>
+              <option value="speeding">Speeding &gt;80mph</option>
+              <option value="fuel-economy-daily">Daily Fuel Economy</option>
+              <option value="legacy-trip-history">Legacy Trip History Report</option>
+              <option value="activity-report">Activity Report</option>
             </select>
+            <select id="legacy-length" class="select hidden">
+              <option value="1">Daily (1 day)</option>
+              <option value="7">Weekly (7 days)</option>
+              <option value="30">Monthly (30 days)</option>
+              <option value="custom">Custom range</option>
+            </select>
+            <div id="activity-cols-wrap" class="hidden" style="display:inline-flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;margin-left:4px">
+              <label style="cursor:pointer;user-select:none"><input type="checkbox" id="col-total-engine" checked> Engine On (total)</label>
+              <label style="cursor:pointer;user-select:none"><input type="checkbox" id="col-drive-only"> Driving Time</label>
+              <label style="cursor:pointer;user-select:none"><input type="checkbox" id="col-idle-only"> Idle Time</label>
+              <label style="cursor:pointer;user-select:none"><input type="checkbox" id="col-work-split"> Work / After-hours</label>
+            </div>
             <input type="date" id="filter-from" class="input-date" />
             <input type="date" id="filter-to" class="input-date" />
+            <span id="speed-thresh-wrap" class="hidden" style="display:inline-flex;align-items:center;gap:4px">
+              <input type="number" id="filter-speed-thresh" class="input-date" style="width:70px" value="80" min="1" max="200" />
+              <span style="font-size:12px;color:var(--text-muted)">mph</span>
+            </span>
+            <select id="report-vehicle" class="select hidden"><option value="">All Vehicles</option></select>
             <button id="run-report" class="btn btn-primary">Run</button>
             <button id="export-csv" class="btn btn-secondary hidden">Export CSV</button>
+            <button id="export-pdf-legacy" class="btn btn-secondary hidden">Export PDF</button>
+            <select id="export-format" class="select hidden">
+              <option value="csv">CSV</option>
+              <option value="excel">Excel</option>
+              <option value="pdf">PDF</option>
+            </select>
+            <button id="export-activity-btn" class="btn btn-secondary hidden">Export</button>
           </div>
         </div>
         <div id="report-summary" class="report-summary hidden"></div>
@@ -87,15 +123,160 @@
           <span class="tab-hint">Based on your fleet's activity over the last 30 days.</span>
           <button id="refresh-suggestions" class="btn btn-secondary">Refresh</button>
         </div>
+        <div id="health-score-container"></div>
         <div id="suggestions-list" class="suggestions-list">
           <p class="report-placeholder">Loading suggestions...</p>
         </div>
       </section>
 
+      <!-- Map tab -->
+      <section id="tab-map" class="tab hidden">
+        <div class="tab-toolbar">
+          <h2 class="tab-title">Infraction Map</h2>
+          <div class="report-filters">
+            <select id="map-rule" class="select"><option value="">All rules</option></select>
+            <input type="date" id="map-from" class="input-date" />
+            <input type="date" id="map-to" class="input-date" />
+            <button id="map-load" class="btn btn-primary">Load Map</button>
+          </div>
+        </div>
+        <div id="map-status" class="map-status hidden"></div>
+        <div class="map-layout">
+          <div id="map-canvas" class="map-canvas"></div>
+          <div id="map-legend" class="map-legend hidden"></div>
+        </div>
+      </section>
+
     </main>
+
+    <!-- ── Drill-down modal ───────────────────────────────────────────────── -->
+    <div id="drilldown-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal">
+
+        <!-- Modal header -->
+        <div class="modal-header">
+          <div class="modal-header-left">
+            <span id="modal-sev-dot" class="modal-sev-dot"></span>
+            <div>
+              <h3 id="modal-title" class="modal-title"></h3>
+              <p id="modal-subtitle" class="modal-subtitle"></p>
+            </div>
+          </div>
+          <button id="modal-close" class="modal-close" title="Close">&times;</button>
+        </div>
+
+        <!-- Filters — injected dynamically by JS per widget type -->
+        <div class="modal-filters" id="modal-filters">
+          <div id="dd-filter-fields"></div>
+          <button id="dd-apply" class="btn btn-primary">Apply</button>
+        </div>
+
+        <!-- Summary bar -->
+        <div id="dd-summary" class="dd-summary hidden"></div>
+
+        <!-- View toggle (table / map) — only shown for location-capable types -->
+        <div id="dd-view-toggle" class="dd-view-toggle hidden">
+          <button id="dd-view-table" class="dd-toggle-btn active" data-view="table">Table</button>
+          <button id="dd-view-map"   class="dd-toggle-btn" data-view="map">Map</button>
+        </div>
+
+        <!-- Data table + mini-map -->
+        <div class="modal-body">
+          <div id="dd-table-wrap" class="dd-table-wrap">
+            <p class="placeholder">Apply filters to view data.</p>
+          </div>
+          <div id="dd-map" class="dd-map hidden"></div>
+        </div>
+
+        <!-- Export bar -->
+        <div class="modal-footer">
+          <span class="modal-footer-label">Export report:</span>
+          <button id="dd-export-excel" class="btn btn-export btn-export-excel" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+            Excel
+          </button>
+          <button id="dd-export-pdf" class="btn btn-export btn-export-pdf" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 13h1a2 2 0 0 1 0 4H9v-4"/><line x1="15" y1="13" x2="15" y2="17"/><line x1="13" y1="15" x2="17" y2="15"/></svg>
+            PDF
+          </button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Param editor modal ───────────────────────────────────────────────── -->
+    <div id="param-editor" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal modal-param-editor">
+        <div class="modal-header">
+          <div class="modal-header-left">
+            <div>
+              <h3 class="modal-title" id="param-editor-title">Edit Parameters</h3>
+              <p class="modal-subtitle">Adjust widget settings — chart will reload automatically</p>
+            </div>
+          </div>
+          <button id="param-editor-close" class="modal-close" title="Close">&times;</button>
+        </div>
+        <div class="param-editor-body" id="param-editor-body">
+          <!-- Dynamic content per widget type -->
+        </div>
+        <div class="modal-footer">
+          <button id="param-editor-save" class="btn btn-primary">Save &amp; Reload Chart</button>
+          <button id="param-editor-cancel" class="btn btn-secondary">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Incident replay modal ────────────────────────────────────────────── -->
+    <div id="incident-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal modal-incident">
+        <div class="modal-header">
+          <div class="modal-header-left">
+            <span class="modal-sev-dot" style="background:var(--critical)"></span>
+            <div>
+              <h3 class="modal-title" id="inc-title">Incident Replay</h3>
+              <p class="modal-subtitle" id="inc-subtitle"></p>
+            </div>
+          </div>
+          <button id="inc-close" class="modal-close" title="Close">&times;</button>
+        </div>
+
+        <div class="inc-legend">
+          <span class="inc-legend-item"><span class="inc-swatch" style="background:#94A3B8"></span>Cause</span>
+          <span class="inc-legend-item"><span class="inc-swatch" style="background:#DC2626"></span>Infraction</span>
+          <span class="inc-legend-item"><span class="inc-swatch" style="background:#64748B"></span>Aftermath</span>
+          <span class="inc-readout" id="inc-readout"></span>
+        </div>
+
+        <div class="inc-body">
+          <div id="inc-map" class="inc-map"></div>
+          <div class="inc-chart-wrap">
+            <canvas id="inc-chart"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Widget picker modal ──────────────────────────────────────────────── -->
+    <div id="widget-picker" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal modal-picker">
+        <div class="modal-header">
+          <div class="modal-header-left">
+            <div>
+              <h3 class="modal-title">Add Widget</h3>
+              <p class="modal-subtitle">Choose a preset dashboard widget to add</p>
+            </div>
+          </div>
+          <button id="picker-close" class="modal-close" title="Close">&times;</button>
+        </div>
+        <div class="picker-grid" id="picker-grid">
+          <!-- Filled by JS -->
+        </div>
+      </div>
+    </div>
 
   </div>
 
-  <script src="src/app.js?v=1.0.3"></script>
+  <script src="src/logo-data.js?v=2.7.0"></script>
+  <script src="src/app.js?v=2.7.0"></script>
 </body>
 </html>
