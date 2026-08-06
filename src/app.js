@@ -75,6 +75,7 @@ geotab.addin.smartInsights = function () {
         }, function () {}); // silent fail — stays Imperial
         setupNav();
         setupReports();
+        setupMyReports();
         restoreActivitySettings(); // pre-fill Activity Report toolbar from last session
         setupEditMode();
         setupWidgetPicker();
@@ -206,6 +207,196 @@ function switchToTab(tabName) {
   var tab = document.getElementById("tab-" + tabName);
   if (tab) { tab.classList.remove("hidden"); tab.classList.add("active"); }
 }
+// ─── My Reports history ───────────────────────────────────────────────────────
+var REPORT_LABELS = {
+  "trips":               "Daily Trips",
+  "carbon-monthly":      "Monthly Carbon",
+  "speeding":            "Speeding >80mph",
+  "fuel-economy-daily":  "Daily Fuel Economy",
+  "legacy-trip-history": "Legacy Trip History",
+  "activity-report":     "Activity Report"
+};
+
+function saveReportHistory(entry) {
+  // entry: { type, label, from, to, preset, cols, speedThresh }
+  try {
+    var hist = getReportHistory();
+    // Deduplicate — remove an identical prior entry to keep list tidy
+    hist = hist.filter(function (h) {
+      return !(h.type === entry.type && h.from === entry.from && h.to === entry.to && h.preset === entry.preset);
+    });
+    hist.unshift(entry);
+    if (hist.length > 10) hist = hist.slice(0, 10);
+    localStorage.setItem("si_report_history", JSON.stringify(hist));
+    renderMyReports();
+  } catch (e) {}
+}
+
+function getReportHistory() {
+  try { return JSON.parse(localStorage.getItem("si_report_history") || "[]"); } catch (e) { return []; }
+}
+
+function clearReportHistory() {
+  try { localStorage.removeItem("si_report_history"); } catch (e) {}
+  renderMyReports();
+}
+
+function renderMyReports() {
+  var hist = getReportHistory();
+  var section = document.getElementById("my-reports-section");
+  var list    = document.getElementById("my-reports-list");
+  if (!section || !list) return;
+  if (!hist.length) { section.classList.add("hidden"); return; }
+  section.classList.remove("hidden");
+
+  list.innerHTML = hist.map(function (h, i) {
+    var isCustom = (h.preset === "custom" || !h.preset);
+    var metaStr  = isCustom
+      ? h.from + " – " + h.to
+      : (h.preset === "1" ? "Daily" : h.preset === "7" ? "Weekly" : "Monthly") + " (last run: " + h.from + " – " + h.to + ")";
+    var badge    = isCustom
+      ? "<span class='my-report-badge custom'>Custom range</span>"
+      : "<span class='my-report-badge'>" + (h.preset === "1" ? "Daily" : h.preset === "7" ? "Weekly" : "Monthly") + "</span>";
+    return "<div class='my-report-item'>" +
+      "<div class='my-report-icon'>" +
+        "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'>" +
+          "<path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/><polyline points='14 2 14 8 20 8'/>" +
+          "<line x1='8' y1='13' x2='16' y2='13'/><line x1='8' y1='17' x2='16' y2='17'/>" +
+        "</svg>" +
+      "</div>" +
+      "<div class='my-report-info'>" +
+        "<div class='my-report-name'>" + esc(h.label) + "</div>" +
+        "<div class='my-report-meta'>" + esc(metaStr) + "</div>" +
+      "</div>" +
+      badge +
+      "<button class='btn btn-sm btn-primary' data-hist-idx='" + i + "'>Re-run</button>" +
+    "</div>";
+  }).join("");
+
+  list.querySelectorAll("[data-hist-idx]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openRerunModal(hist[parseInt(this.dataset.histIdx, 10)]);
+    });
+  });
+}
+
+function openRerunModal(h) {
+  var isCustom = (h.preset === "custom" || !h.preset);
+  var modal    = document.getElementById("rerun-modal");
+  var title    = document.getElementById("rerun-title");
+  var subtitle = document.getElementById("rerun-subtitle");
+  var body     = document.getElementById("rerun-body");
+  var period   = document.getElementById("rerun-period");
+  var editArea = document.getElementById("rerun-edit-area");
+  var editBtn  = document.getElementById("rerun-edit");
+  var confirmBtn = document.getElementById("rerun-confirm");
+
+  title.textContent    = "Re-run: " + h.label;
+  subtitle.textContent = isCustom ? "Custom date range" : "Preset: " + (h.preset === "1" ? "Daily" : h.preset === "7" ? "Weekly" : "Monthly");
+
+  // Reset edit state
+  editArea.style.display = "none";
+  editBtn.textContent = "Edit Period";
+
+  var resolvedFrom, resolvedTo;
+
+  if (isCustom) {
+    body.textContent = "You’re about to run this report again for the exact same period:";
+    period.textContent = h.from + " – " + h.to;
+    resolvedFrom = h.from;
+    resolvedTo   = h.to;
+    document.getElementById("rerun-from").value = h.from;
+    document.getElementById("rerun-to").value   = h.to;
+  } else {
+    // Re-resolve relative preset from today
+    var today   = new Date();
+    var toDate  = new Date(today);
+    var fromDate= new Date(today);
+    fromDate.setDate(today.getDate() - (parseInt(h.preset, 10) - 1));
+    resolvedFrom = fmtDateInput(fromDate);
+    resolvedTo   = fmtDateInput(toDate);
+    body.textContent = "This will run “" + h.label + "” for the past " + (h.preset === "1" ? "day" : h.preset === "7" ? "7 days" : "30 days") + " relative to today.";
+    period.textContent = resolvedFrom + " – " + resolvedTo;
+    document.getElementById("rerun-from").value = resolvedFrom;
+    document.getElementById("rerun-to").value   = resolvedTo;
+    // Preset reports don't offer period editing
+    editBtn.style.display = "none";
+  }
+
+  if (isCustom) {
+    editBtn.style.display = "";
+    var editing = false;
+    editBtn.onclick = function () {
+      editing = !editing;
+      editArea.style.display = editing ? "" : "none";
+      editBtn.textContent = editing ? "Use original period" : "Edit Period";
+    };
+  }
+
+  confirmBtn.onclick = function () {
+    var fromVal = isCustom && document.getElementById("rerun-edit-area").style.display !== "none"
+      ? document.getElementById("rerun-from").value
+      : resolvedFrom;
+    var toVal = isCustom && document.getElementById("rerun-edit-area").style.display !== "none"
+      ? document.getElementById("rerun-to").value
+      : resolvedTo;
+    closeRerunModal();
+    applyAndRunReport(h, fromVal, toVal);
+  };
+
+  modal.classList.remove("hidden");
+}
+
+function closeRerunModal() {
+  document.getElementById("rerun-modal").classList.add("hidden");
+}
+
+function applyAndRunReport(h, from, to) {
+  // Switch to Reports tab
+  switchToTab("reports");
+  // Set report type
+  var typeSel = document.getElementById("report-type");
+  typeSel.value = h.type;
+  typeSel.dispatchEvent(new Event("change"));
+  // Set dates
+  document.getElementById("filter-from").value = from;
+  document.getElementById("filter-to").value   = to;
+  // Set preset length if applicable
+  if (h.preset && h.preset !== "custom") {
+    var lenSel = document.getElementById("legacy-length");
+    if (lenSel) lenSel.value = h.preset;
+  } else if (h.preset === "custom") {
+    var lenSel2 = document.getElementById("legacy-length");
+    if (lenSel2) lenSel2.value = "custom";
+  }
+  // Restore activity columns if saved
+  if (h.type === "activity-report" && h.cols) {
+    ["total-engine", "drive-only", "idle-only", "work-split"].forEach(function (id) {
+      var el = document.getElementById("col-" + id);
+      if (el) el.checked = h.cols.indexOf(id) !== -1;
+    });
+  }
+  // Restore speed threshold if saved
+  if (h.type === "speeding" && h.speedThresh) {
+    var thEl = document.getElementById("filter-speed-thresh");
+    if (thEl) thEl.value = h.speedThresh;
+  }
+  // Run
+  runReport();
+}
+
+function setupMyReports() {
+  document.getElementById("my-reports-clear").addEventListener("click", function () {
+    clearReportHistory();
+  });
+  document.getElementById("rerun-close").addEventListener("click", closeRerunModal);
+  document.getElementById("rerun-cancel").addEventListener("click", closeRerunModal);
+  document.getElementById("rerun-modal").addEventListener("click", function (e) {
+    if (e.target === this) closeRerunModal();
+  });
+  renderMyReports();
+}
+
 // ─── Reports ────────────────────────────────────────────────────────────────
 function setupReports() {
   var today = new Date();
@@ -279,7 +470,25 @@ function runReport() {
   document.getElementById("export-csv").classList.add("hidden");
   document.getElementById("report-vehicle").classList.add("hidden");
 
-  function done() { btn.disabled = false; btn.textContent = "Run"; }
+  // Capture preset/custom state for history
+  var lenSel    = document.getElementById("legacy-length");
+  var preset    = (type === "legacy-trip-history" || type === "activity-report") && lenSel
+    ? lenSel.value
+    : (type === "speeding" || type === "trips" || type === "carbon-monthly" || type === "fuel-economy-daily" ? "custom" : null);
+  var histEntry = {
+    type:       type,
+    label:      REPORT_LABELS[type] || type,
+    from:       from,
+    to:         to,
+    preset:     preset,
+    cols:       type === "activity-report" ? getActivityCols() : null,
+    speedThresh:type === "speeding" ? (document.getElementById("filter-speed-thresh") || {}).value || "80" : null
+  };
+
+  function done(success) {
+    btn.disabled = false; btn.textContent = "Run";
+    if (success !== false) saveReportHistory(histEntry);
+  }
 
   if      (type === "trips")                 runTripsReport(from, to, done);
   else if (type === "carbon-monthly")        runCarbonReport(from, to, done);
@@ -315,8 +524,8 @@ function runTripsReport(from, to, done) {
       renderTripsOutput(trips, deviceMap);
       document.getElementById("export-csv").classList.remove("hidden");
       done();
-    }, function (err) { reportError(err); done(); });
-  }, function (err) { reportError(err); done(); });
+    }, function (err) { reportError(err); done(false); });
+  }, function (err) { reportError(err); done(false); });
 }
 
 function renderTripsOutput(trips, deviceMap) {
@@ -383,8 +592,8 @@ function runCarbonReport(from, to, done) {
       renderCarbonOutput(Object.values(byVehicle));
       document.getElementById("export-csv").classList.remove("hidden");
       done();
-    }, function (err) { reportError(err); done(); });
-  }, function (err) { reportError(err); done(); });
+    }, function (err) { reportError(err); done(false); });
+  }, function (err) { reportError(err); done(false); });
 }
 
 function renderCarbonOutput(rows) {
@@ -429,8 +638,8 @@ function runSpeedingReport(from, to, done) {
       renderSpeedingOutput(speeding, deviceMap);
       document.getElementById("export-csv").classList.remove("hidden");
       done();
-    }, function (err) { reportError(err); done(); });
-  }, function (err) { reportError(err); done(); });
+    }, function (err) { reportError(err); done(false); });
+  }, function (err) { reportError(err); done(false); });
 }
 
 function renderSpeedingOutput(trips, deviceMap) {
@@ -489,9 +698,9 @@ function runMaintenanceUpcomingReport(done) {
       done();
     }, function (err) {
       document.getElementById("report-output").innerHTML = "<p class='placeholder' style='color:var(--warning)'>Maintenance reminders not available. Please ensure maintenance reminders are configured in MyGeotab.</p>";
-      done();
+      done(false);
     });
-  }, function (err) { reportError(err); done(); });
+  }, function (err) { reportError(err); done(false); });
 }
 
 function renderMaintenanceUpcomingOutput(items) {
@@ -559,9 +768,9 @@ function runMaintenanceSpendReport(from, to, done) {
       done();
     }, function (err) {
       document.getElementById("report-output").innerHTML = "<p class='placeholder' style='color:var(--warning)'>Maintenance reminders not available in this database.</p>";
-      done();
+      done(false);
     });
-  }, function (err) { reportError(err); done(); });
+  }, function (err) { reportError(err); done(false); });
 }
 
 function renderMaintenanceSpendOutput(items) {
@@ -624,8 +833,8 @@ function runFuelEconomyReport(from, to, done) {
       renderFuelEconomyOutput(rows);
       document.getElementById("export-csv").classList.remove("hidden");
       done();
-    }, function (err) { reportError(err); done(); });
-  }, function (err) { reportError(err); done(); });
+    }, function (err) { reportError(err); done(false); });
+  }, function (err) { reportError(err); done(false); });
 }
 
 function renderFuelEconomyOutput(rows) {
@@ -827,8 +1036,8 @@ function runLegacyTripHistoryReport(from, to, done) {
         document.getElementById("export-pdf-legacy").classList.remove("hidden");
         done();
       });
-    }, function (err) { reportError(err); done(); });
-  }, function (err) { reportError(err); done(); });
+    }, function (err) { reportError(err); done(false); });
+  }, function (err) { reportError(err); done(false); });
 }
 
 // Build the day-block rows for one vehicle's trip list, including the synthetic
@@ -1024,8 +1233,8 @@ function runActivityReport(from, to, done) {
         saveActivitySettings(from, to);
         done();
       });
-    }, function (err) { reportError(err); done(); });
-  }, function (err) { reportError(err); done(); });
+    }, function (err) { reportError(err); done(false); });
+  }, function (err) { reportError(err); done(false); });
 }
 
 function renderActivityReport(byDevice, addrMap) {
