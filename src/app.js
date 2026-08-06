@@ -73,16 +73,22 @@ geotab.addin.smartInsights = function () {
             state.unitSystem = settings[0].measurementSystem; // "Metric" or "Imperial"
           }
         }, function () {}); // silent fail — stays Imperial
-        setupNav();
-        setupReports();
-        setupMyReports();
-        restoreActivitySettings(); // pre-fill Activity Report toolbar from last session
-        setupEditMode();
-        setupWidgetPicker();
-        setupModal();
-        setupParamEditor();
-        setupMap();
-        setupIncident();
+        var steps = [
+          ["setupNav",               setupNav],
+          ["setupReports",           setupReports],
+          ["setupMyReports",         setupMyReports],
+          ["restoreActivitySettings",restoreActivitySettings],
+          ["setupEditMode",          setupEditMode],
+          ["setupWidgetPicker",      setupWidgetPicker],
+          ["setupModal",             setupModal],
+          ["setupParamEditor",       setupParamEditor],
+          ["setupMap",               setupMap],
+          ["setupIncident",          setupIncident]
+        ];
+        for (var si = 0; si < steps.length; si++) {
+          try { steps[si][1](); }
+          catch (stepErr) { console.error("SmartInsights: " + steps[si][0] + " threw:", stepErr); throw stepErr; }
+        }
         // Keep the loading screen until AddInData has been fetched so the
         // dashboard doesn't flash empty before widgets appear.
         restoreDashboard(function () {
@@ -91,6 +97,7 @@ geotab.addin.smartInsights = function () {
           loadSuggestions();
         });
       } catch (err) {
+        console.error("SmartInsights init error:", err);
         showError("Init error: " + err.message);
       }
       if (callback) callback();
@@ -402,9 +409,15 @@ function setupMyReports() {
 
 // ─── Reports ────────────────────────────────────────────────────────────────
 function setupReports() {
-  // Show the preset selector immediately (it defaults to "last-week")
+  // Show the preset selector and apply default (last-week) dates
   document.getElementById("legacy-length").classList.remove("hidden");
-  applyLegacyLength();
+  try { applyLegacyLength(); } catch (e) {
+    // Fallback: set last 7 days manually
+    var today = new Date(), week = new Date(today);
+    week.setDate(today.getDate() - 7);
+    document.getElementById("filter-from").value = fmtDateInput(week);
+    document.getElementById("filter-to").value   = fmtDateInput(today);
+  }
   document.getElementById("run-report").addEventListener("click", runReport);
   document.getElementById("export-csv").addEventListener("click", exportReportCsv);
   document.getElementById("export-pdf-legacy").addEventListener("click", exportLegacyTripHistoryPdf);
