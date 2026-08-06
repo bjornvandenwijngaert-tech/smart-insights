@@ -217,6 +217,16 @@ var REPORT_LABELS = {
   "activity-report":     "Activity Report"
 };
 
+var PRESET_LABELS = {
+  "today":      "Today",
+  "yesterday":  "Yesterday",
+  "this-week":  "This week",
+  "last-week":  "Last week",
+  "this-month": "This month",
+  "last-month": "Last month",
+  "custom":     "Custom range"
+};
+
 function saveReportHistory(entry) {
   // entry: { type, label, from, to, preset, cols, speedThresh }
   try {
@@ -250,13 +260,14 @@ function renderMyReports() {
   section.classList.remove("hidden");
 
   list.innerHTML = hist.map(function (h, i) {
-    var isCustom = (h.preset === "custom" || !h.preset);
+    var isCustom    = (h.preset === "custom" || !h.preset);
+    var presetLabel = PRESET_LABELS[h.preset] || h.preset;
     var metaStr  = isCustom
       ? h.from + " – " + h.to
-      : (h.preset === "1" ? "Daily" : h.preset === "7" ? "Weekly" : "Monthly") + " (last run: " + h.from + " – " + h.to + ")";
+      : presetLabel + " (last run: " + h.from + " – " + h.to + ")";
     var badge    = isCustom
       ? "<span class='my-report-badge custom'>Custom range</span>"
-      : "<span class='my-report-badge'>" + (h.preset === "1" ? "Daily" : h.preset === "7" ? "Weekly" : "Monthly") + "</span>";
+      : "<span class='my-report-badge'>" + presetLabel + "</span>";
     return "<div class='my-report-item'>" +
       "<div class='my-report-icon'>" +
         "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'>" +
@@ -291,36 +302,33 @@ function openRerunModal(h) {
   var editBtn  = document.getElementById("rerun-edit");
   var confirmBtn = document.getElementById("rerun-confirm");
 
-  title.textContent    = "Re-run: " + h.label;
-  subtitle.textContent = isCustom ? "Custom date range" : "Preset: " + (h.preset === "1" ? "Daily" : h.preset === "7" ? "Weekly" : "Monthly");
+  var presetLabel = PRESET_LABELS[h.preset] || h.preset || “Custom range”;
+  title.textContent    = “Re-run: “ + h.label;
+  subtitle.textContent = isCustom ? “Custom date range” : “Preset: “ + presetLabel;
 
   // Reset edit state
-  editArea.style.display = "none";
-  editBtn.textContent = "Edit Period";
+  editArea.style.display = “none”;
+  editBtn.textContent = “Edit Period”;
 
   var resolvedFrom, resolvedTo;
 
   if (isCustom) {
-    body.textContent = "You’re about to run this report again for the exact same period:";
-    period.textContent = h.from + " – " + h.to;
+    body.textContent = “You’re about to run this report again for the exact same period:”;
+    period.textContent = h.from + “ – “ + h.to;
     resolvedFrom = h.from;
     resolvedTo   = h.to;
-    document.getElementById("rerun-from").value = h.from;
-    document.getElementById("rerun-to").value   = h.to;
+    document.getElementById(“rerun-from”).value = h.from;
+    document.getElementById(“rerun-to”).value   = h.to;
   } else {
-    // Re-resolve relative preset from today
-    var today   = new Date();
-    var toDate  = new Date(today);
-    var fromDate= new Date(today);
-    fromDate.setDate(today.getDate() - (parseInt(h.preset, 10) - 1));
-    resolvedFrom = fmtDateInput(fromDate);
-    resolvedTo   = fmtDateInput(toDate);
-    body.textContent = "This will run “" + h.label + "” for the past " + (h.preset === "1" ? "day" : h.preset === "7" ? "7 days" : "30 days") + " relative to today.";
-    period.textContent = resolvedFrom + " – " + resolvedTo;
-    document.getElementById("rerun-from").value = resolvedFrom;
-    document.getElementById("rerun-to").value   = resolvedTo;
-    // Preset reports don't offer period editing
-    editBtn.style.display = "none";
+    // Re-resolve the named preset relative to today
+    var range = presetDateRange(h.preset);
+    resolvedFrom = range ? range.from : h.from;
+    resolvedTo   = range ? range.to   : h.to;
+    body.textContent = “This will run “” + h.label + “” for “” + presetLabel + “” relative to today.”;
+    period.textContent = resolvedFrom + “ – “ + resolvedTo;
+    document.getElementById(“rerun-from”).value = resolvedFrom;
+    document.getElementById(“rerun-to”).value   = resolvedTo;
+    editBtn.style.display = “none”;
   }
 
   if (isCustom) {
@@ -361,14 +369,9 @@ function applyAndRunReport(h, from, to) {
   // Set dates
   document.getElementById("filter-from").value = from;
   document.getElementById("filter-to").value   = to;
-  // Set preset length if applicable
-  if (h.preset && h.preset !== "custom") {
-    var lenSel = document.getElementById("legacy-length");
-    if (lenSel) lenSel.value = h.preset;
-  } else if (h.preset === "custom") {
-    var lenSel2 = document.getElementById("legacy-length");
-    if (lenSel2) lenSel2.value = "custom";
-  }
+  // Set preset selector
+  var lenSel = document.getElementById("legacy-length");
+  if (lenSel && h.preset) lenSel.value = h.preset;
   // Restore activity columns if saved
   if (h.type === "activity-report" && h.cols) {
     ["total-engine", "drive-only", "idle-only", "work-split"].forEach(function (id) {
@@ -399,11 +402,9 @@ function setupMyReports() {
 
 // ─── Reports ────────────────────────────────────────────────────────────────
 function setupReports() {
-  var today = new Date();
-  var week  = new Date(today);
-  week.setDate(today.getDate() - 7);
-  document.getElementById("filter-from").value = fmtDateInput(week);
-  document.getElementById("filter-to").value   = fmtDateInput(today);
+  // Show the preset selector immediately (it defaults to "last-week")
+  document.getElementById("legacy-length").classList.remove("hidden");
+  applyLegacyLength();
   document.getElementById("run-report").addEventListener("click", runReport);
   document.getElementById("export-csv").addEventListener("click", exportReportCsv);
   document.getElementById("export-pdf-legacy").addEventListener("click", exportLegacyTripHistoryPdf);
@@ -425,8 +426,9 @@ function setupReports() {
     if (thWrap) thWrap.classList.toggle("hidden", type !== "speeding");
     var lenWrap = document.getElementById("legacy-length");
     if (lenWrap) {
-      lenWrap.classList.toggle("hidden", type !== "legacy-trip-history" && type !== "activity-report");
-      if (type === "legacy-trip-history" || type === "activity-report") applyLegacyLength();
+      var noPreset = (type === "maintenance-upcoming");
+      lenWrap.classList.toggle("hidden", noPreset);
+      if (!noPreset) applyLegacyLength();
     }
     if (type === "activity-report") {
       document.getElementById("activity-cols-wrap").classList.remove("hidden");
@@ -441,18 +443,42 @@ function setupReports() {
   });
 }
 
-// Recompute filter-from from filter-to based on the selected preset length.
-// "custom" leaves both date inputs alone so the user can pick any range manually.
+// Compute from/to for a named preset relative to today. Returns null for "custom".
+function presetDateRange(preset) {
+  var now   = new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var from, to;
+  if (preset === "today") {
+    from = to = new Date(today);
+  } else if (preset === "yesterday") {
+    from = to = new Date(today); from.setDate(today.getDate() - 1); to = new Date(from);
+  } else if (preset === "this-week") {
+    var dow = today.getDay(); // 0=Sun
+    from = new Date(today); from.setDate(today.getDate() - dow);
+    to   = new Date(today);
+  } else if (preset === "last-week") {
+    var dow2 = today.getDay();
+    to   = new Date(today); to.setDate(today.getDate() - dow2 - 1);
+    from = new Date(to);    from.setDate(to.getDate() - 6);
+  } else if (preset === "this-month") {
+    from = new Date(today.getFullYear(), today.getMonth(), 1);
+    to   = new Date(today);
+  } else if (preset === "last-month") {
+    from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    to   = new Date(today.getFullYear(), today.getMonth(), 0); // last day of prev month
+  } else {
+    return null; // custom
+  }
+  return { from: fmtDateInput(from), to: fmtDateInput(to) };
+}
+
+// Apply the selected preset to the date inputs.
 function applyLegacyLength() {
   var lenSel = document.getElementById("legacy-length");
-  var days   = lenSel.value;
-  if (days === "custom") return;
-  var toEl = document.getElementById("filter-to");
-  var to   = toEl.value ? new Date(toEl.value + "T00:00:00") : new Date();
-  var from = new Date(to);
-  from.setDate(to.getDate() - (parseInt(days, 10) - 1));
-  document.getElementById("filter-from").value = fmtDateInput(from);
-  document.getElementById("filter-to").value   = fmtDateInput(to);
+  var range  = presetDateRange(lenSel.value);
+  if (!range) return; // custom — leave inputs alone
+  document.getElementById("filter-from").value = range.from;
+  document.getElementById("filter-to").value   = range.to;
 }
 
 function runReport() {
@@ -471,10 +497,8 @@ function runReport() {
   document.getElementById("report-vehicle").classList.add("hidden");
 
   // Capture preset/custom state for history
-  var lenSel    = document.getElementById("legacy-length");
-  var preset    = (type === "legacy-trip-history" || type === "activity-report") && lenSel
-    ? lenSel.value
-    : (type === "speeding" || type === "trips" || type === "carbon-monthly" || type === "fuel-economy-daily" ? "custom" : null);
+  var lenSel = document.getElementById("legacy-length");
+  var preset  = (type !== "maintenance-upcoming" && lenSel) ? lenSel.value : "custom";
   var histEntry = {
     type:       type,
     label:      REPORT_LABELS[type] || type,

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Smart Insights</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-  <link rel="stylesheet" href="src/styles.css?v=2.8.0" />
+  <link rel="stylesheet" href="src/styles.css?v=2.8.1" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -38,7 +38,7 @@
       </nav>
       <div class="header-meta">
         <span id="db-name" class="db-badge"></span>
-        <span class="version-badge">v2.8.0</span>
+        <span class="version-badge">v2.8.1</span>
       </div>
     </header>
 
@@ -91,9 +91,12 @@
               <option value="activity-report">Activity Report</option>
             </select>
             <select id="legacy-length" class="select hidden">
-              <option value="1">Daily (1 day)</option>
-              <option value="7">Weekly (7 days)</option>
-              <option value="30">Monthly (30 days)</option>
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="this-week">This week</option>
+              <option value="last-week" selected>Last week</option>
+              <option value="this-month">This month</option>
+              <option value="last-month">Last month</option>
               <option value="custom">Custom range</option>
             </select>
             <div id="activity-cols-wrap" class="hidden" style="display:inline-flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;margin-left:4px">
@@ -318,7 +321,7 @@
 
   </div>
 
-  <script src="src/logo-data.js?v=2.8.0"></script>
-  <script src="src/app.js?v=2.8.0"></script>
+  <script src="src/logo-data.js?v=2.8.1"></script>
+  <script src="src/app.js?v=2.8.1"></script>
 </body>
 </html>
