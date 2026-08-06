@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Smart Insights</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-  <link rel="stylesheet" href="src/styles.css?v=2.8.3" />
+  <link rel="stylesheet" href="src/styles.css?v=2.7.0" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -38,7 +38,7 @@
       </nav>
       <div class="header-meta">
         <span id="db-name" class="db-badge"></span>
-        <span class="version-badge">v2.8.3</span>
+        <span class="version-badge">v2.7.0</span>
       </div>
     </header>
 
@@ -70,15 +70,6 @@
 
       <!-- Reports tab -->
       <section id="tab-reports" class="tab hidden">
-        <!-- My Reports history -->
-        <div id="my-reports-section" class="my-reports-section hidden" style="padding:20px 24px 0">
-          <div class="my-reports-header">
-            <span class="my-reports-title">My Reports</span>
-            <button id="my-reports-clear" class="my-reports-clear">Clear history</button>
-          </div>
-          <div id="my-reports-list" class="my-reports-list"></div>
-        </div>
-
         <div class="tab-toolbar">
           <h2 class="tab-title">Reports</h2>
           <div class="report-filters">
@@ -91,12 +82,9 @@
               <option value="activity-report">Activity Report</option>
             </select>
             <select id="legacy-length" class="select hidden">
-              <option value="today">Today</option>
-              <option value="yesterday">Yesterday</option>
-              <option value="this-week">This week</option>
-              <option value="last-week" selected>Last week</option>
-              <option value="this-month">This month</option>
-              <option value="last-month">Last month</option>
+              <option value="1">Daily (1 day)</option>
+              <option value="7">Weekly (7 days)</option>
+              <option value="30">Monthly (30 days)</option>
               <option value="custom">Custom range</option>
             </select>
             <div id="activity-cols-wrap" class="hidden" style="display:inline-flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;margin-left:4px">
@@ -239,38 +227,6 @@
       </div>
     </div>
 
-    <!-- ── Rerun confirmation modal ──────────────────────────────────────────── -->
-    <div id="rerun-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
-      <div class="modal modal-rerun" style="max-width:440px">
-        <div class="modal-header">
-          <div class="modal-header-left">
-            <div>
-              <h3 class="modal-title" id="rerun-title">Re-run Report</h3>
-              <p class="modal-subtitle" id="rerun-subtitle"></p>
-            </div>
-          </div>
-          <button id="rerun-close" class="modal-close" title="Close">&times;</button>
-        </div>
-        <div style="padding:0 20px 20px">
-          <p id="rerun-body" style="font-size:13px;color:var(--text-2);line-height:1.6"></p>
-          <div class="rerun-period" id="rerun-period"></div>
-          <div id="rerun-edit-area" class="rerun-edit-area">
-            <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Choose a new date range:</p>
-            <div class="rerun-date-row">
-              <input type="date" id="rerun-from" class="input-date" />
-              <span style="color:var(--text-muted);font-size:12px">to</span>
-              <input type="date" id="rerun-to" class="input-date" />
-            </div>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button id="rerun-confirm" class="btn btn-primary">Run Report</button>
-          <button id="rerun-edit" class="btn btn-secondary">Edit Period</button>
-          <button id="rerun-cancel" class="btn btn-secondary">Cancel</button>
-        </div>
-      </div>
-    </div>
-
     <!-- ── Incident replay modal ────────────────────────────────────────────── -->
     <div id="incident-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
       <div class="modal modal-incident">
@@ -321,7 +277,7 @@
 
   </div>
 
-  <script src="src/logo-data.js?v=2.8.3"></script>
-  <script src="src/app.js?v=2.8.3"></script>
+  <script src="src/logo-data.js?v=2.7.0"></script>
+  <script src="src/app.js?v=2.7.0"></script>
 </body>
 </html>
