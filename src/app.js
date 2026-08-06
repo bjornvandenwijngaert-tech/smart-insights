@@ -409,10 +409,8 @@ function setupMyReports() {
 
 // ─── Reports ────────────────────────────────────────────────────────────────
 function setupReports() {
-  // Show the preset selector and apply default (last-week) dates
-  document.getElementById("legacy-length").classList.remove("hidden");
+  // Apply default preset dates (last-week) to the date inputs
   try { applyLegacyLength(); } catch (e) {
-    // Fallback: set last 7 days manually
     var today = new Date(), week = new Date(today);
     week.setDate(today.getDate() - 7);
     document.getElementById("filter-from").value = fmtDateInput(week);
@@ -448,6 +446,8 @@ function setupReports() {
     }
   });
   document.getElementById("legacy-length").addEventListener("change", applyLegacyLength);
+  // Show the preset for the default report type (trips) on load
+  document.getElementById("report-type").dispatchEvent(new Event("change"));
   document.getElementById("export-activity-btn").addEventListener("click", function () {
     var fmt = document.getElementById("export-format").value;
     if (fmt === "csv")        exportActivityCsv();
