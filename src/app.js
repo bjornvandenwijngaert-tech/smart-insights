@@ -50,6 +50,7 @@ var state = {
   dashboardDataId:  null,  // AddInData record id; null until first load or save
   legacyByDevice:   null,  // Legacy Trip History Report: { deviceId: { name, trips, drivers } }
   legacyAddrMap:    null,  // Legacy Trip History Report: "lat,lng" -> resolved address string
+  legacyStopInfo:   null,  // Legacy Trip History Report: Map(trip -> { mins, excluded }) — see buildLegacyStopInfo
   unitSystem:       "Imperial",  // loaded from SystemSettings on init ("Metric" or "Imperial")
   activityByDevice: null,  // Activity Report: { deviceId: { name, trips, drivers } }
   activityAddrMap:  null   // Activity Report: "lat,lng" -> resolved address string
@@ -708,6 +709,64 @@ function fmtDurPrecise(mins) {
 // wrongly divided by 1609.344 / 1000, making distances & MPG ~1000x too small.)
 function milesFromDistance(km) { return (km || 0) * 0.621371; }
 
+// ─── Overnight parking (Legacy Trip History only) ──────────────────────────
+// Trip.StopDuration runs from the engine stopping to the NEXT trip's start, so a
+// vehicle parked at 18:00 and driven again at 07:00 arrives as a single 13-hour
+// stop on the day's last trip. Nothing on the Trip record separates that from a
+// real stop, so we infer it. A stop is treated as an overnight park, and left
+// out of every figure, when all three hold:
+//   1. it is that vehicle's last trip of the local day,
+//   2. it runs longer than OVERNIGHT_MIN_HOURS,
+//   3. it ends on a later local day than it began.
+// A long mid-shift stop that ends the same day is genuine and still counts.
+// The Activity Report deliberately does NOT use this — it reports raw stop time.
+var OVERNIGHT_MIN_HOURS = 3;
+
+// Local calendar day. Everything these reports display is local time, so the day
+// bucket has to be local too — toISOString() would file a 00:30 BST trip under
+// the previous day, and an evening trip west of Greenwich under the next one.
+function localDayKey(iso) {
+  if (!iso) return "";
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  var m = d.getMonth() + 1, day = d.getDate();
+  return d.getFullYear() + "-" + (m < 10 ? "0" : "") + m + "-" + (day < 10 ? "0" : "") + day;
+}
+
+// One vehicle's trips, already sorted by start -> Map(trip -> { mins, excluded }).
+// mins is null for an excluded stop, which is exactly what the renderers already
+// treat as "unknown" and draw as an em-dash.
+function buildLegacyStopInfo(sortedTrips) {
+  var lastOfDay = {};
+  sortedTrips.forEach(function (t, i) { lastOfDay[localDayKey(t.start)] = i; });
+
+  var info = new Map();
+  sortedTrips.forEach(function (t, i) {
+    var mins = parseDurationToMins(t.stopDuration);
+    var excluded;
+    if (mins == null) {
+      // Usually the last trip in the range: Geotab has no next trip to measure
+      // to. We cannot count what we cannot measure.
+      excluded = true;
+    } else if (i === lastOfDay[localDayKey(t.start)] && mins > OVERNIGHT_MIN_HOURS * 60) {
+      var endsAt = new Date(new Date(t.stop).getTime() + mins * 60000);
+      excluded = localDayKey(endsAt.toISOString()) > localDayKey(t.stop);
+    } else {
+      excluded = false;
+    }
+    info.set(t, { mins: excluded ? null : mins, excluded: excluded });
+  });
+  return info;
+}
+
+// Stop minutes for the Legacy Trip History report, or null when the stop is an
+// overnight park or unmeasurable. Falls back to the raw field if the trip
+// predates the map. Activity Report call sites read stopDuration directly.
+function legacyStopMins(t) {
+  var entry = state.legacyStopInfo && state.legacyStopInfo.get(t);
+  return entry ? entry.mins : parseDurationToMins(t.stopDuration);
+}
+
 // Group fetched trips by device, sorted chronologically. Driver names come
 // straight off Trip.driverName, matching the convention already used elsewhere
 // in this file (renderTripsOutput, renderSpeedingOutput).
@@ -719,9 +778,14 @@ function buildLegacyByDevice(trips, deviceMap) {
     byDevice[vid].trips.push(t);
     if (t.driverName) byDevice[vid].drivers[t.driverName] = 1;
   });
+  // Overnight detection needs each vehicle's trips in order, so it rides along
+  // with the sort rather than being recomputed in each of the three renderers.
+  var stopInfo = new Map();
   Object.keys(byDevice).forEach(function (vid) {
     byDevice[vid].trips.sort(function (a, b) { return new Date(a.start) - new Date(b.start); });
+    buildLegacyStopInfo(byDevice[vid].trips).forEach(function (v, k) { stopInfo.set(k, v); });
   });
+  state.legacyStopInfo = stopInfo;
   return byDevice;
 }
 
@@ -809,8 +873,12 @@ function runLegacyTripHistoryReport(from, to, done) {
         var totalDistM  = trips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
         var totalDrive  = trips.reduce(function (s, t) { return s + (parseDurationToMins(t.drivingDuration) != null ? parseDurationToMins(t.drivingDuration) : durationMins(t.start, t.stop)); }, 0);
         var totalIdle   = trips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
-        var totalStop   = trips.reduce(function (s, t) { return s + (parseDurationToMins(t.stopDuration) || 0); }, 0);
-        var numStops    = trips.length;
+        // Overnight parks carry no stop figure, so they are not stops here either.
+        // Counting them in the denominator while dropping them from the total would
+        // make the average disagree with the two cards it sits between.
+        var counted     = trips.filter(function (t) { return legacyStopMins(t) != null; });
+        var totalStop   = counted.reduce(function (s, t) { return s + legacyStopMins(t); }, 0);
+        var numStops    = counted.length;
         var avgStop     = numStops ? totalStop / numStops : 0;
 
         showReportSummary([
@@ -839,7 +907,7 @@ function buildLegacyDayBlocks(vTrips, addrMap) {
   var days = {}; // 'yyyy-mm-dd' -> { date, rows:[{trip, prevTrip}] }
   var order = [];
   vTrips.forEach(function (t, i) {
-    var day = fmtDateShort(t.start);
+    var day = localDayKey(t.start);
     if (!days[day]) { days[day] = { date: day, rows: [] }; order.push(day); }
     days[day].rows.push({ trip: t, prevTrip: i > 0 ? vTrips[i - 1] : null });
   });
@@ -861,7 +929,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
         var t = r.trip;
         var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
         var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
-        var stopMins  = parseDurationToMins(t.stopDuration);
+        var stopMins  = legacyStopMins(t);
         var stopStr   = stopMins != null ? fmtDurPrecise(stopMins) : "\u2014";
         return "<tr>" +
           "<td>" + fmtTime(t.start) + "</td>" +
@@ -876,7 +944,8 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
       var dayDistM  = block.rows.reduce(function (s, r) { return s + (r.trip.distance || 0); }, 0);
       var dayDrive  = block.rows.reduce(function (s, r) { var dm = parseDurationToMins(r.trip.drivingDuration); return s + (dm != null ? dm : durationMins(r.trip.start, r.trip.stop)); }, 0);
       var dayIdle   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.idlingDuration) || 0); }, 0);
-      var dayStop   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.stopDuration) || 0); }, 0);
+      var dayCount  = block.rows.filter(function (r) { return legacyStopMins(r.trip) != null; });
+      var dayStop   = dayCount.reduce(function (s, r) { return s + legacyStopMins(r.trip); }, 0);
 
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
@@ -891,7 +960,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
       return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table'>" +
         "<thead><tr><th>Start Time</th><th>Distance / Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th></tr></thead>" +
         "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml +
-        "<tr style='font-weight:700;background:var(--surface-2)'><td>" + block.date + " Total</td><td>" + milesFromDistance(dayDistM).toFixed(2) + " mi in " + fmtDurWhole(dayDrive) + "</td><td></td><td>" + block.rows.length + " stops</td><td>" + fmtDurWhole(dayIdle) + "</td><td>" + fmtDurWhole(dayStop) + "</td></tr>" +
+        "<tr style='font-weight:700;background:var(--surface-2)'><td>" + block.date + " Total</td><td>" + milesFromDistance(dayDistM).toFixed(2) + " mi in " + fmtDurWhole(dayDrive) + "</td><td></td><td>" + dayCount.length + " stops</td><td>" + fmtDurWhole(dayIdle) + "</td><td>" + fmtDurWhole(dayStop) + "</td></tr>" +
         "</tbody></table></div>";
     }).join("");
 
@@ -1244,9 +1313,9 @@ function exportReportCsv() {
       v.trips.forEach(function (t) {
         var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
         var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
-        var stopMins  = parseDurationToMins(t.stopDuration);
+        var stopMins  = legacyStopMins(t);
         rows.push([
-          v.name, driverNames, fmtDateShort(t.start), fmtTime(t.start),
+          v.name, driverNames, localDayKey(t.start), fmtTime(t.start),
           milesFromDistance(t.distance).toFixed(2), fmtDurPrecise(driveMins),
           addressForPoint(t.stopPoint, addrMap), fmtTime(t.stop),
           fmtDurPrecise(idleMins), stopMins != null ? fmtDurPrecise(stopMins) : ""
@@ -3006,8 +3075,10 @@ function exportLegacyTripHistoryPdf() {
   var totalDistM = allTrips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
   var totalDrive = allTrips.reduce(function (s, t) { var dm = parseDurationToMins(t.drivingDuration); return s + (dm != null ? dm : durationMins(t.start, t.stop)); }, 0);
   var totalIdle  = allTrips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
-  var totalStop  = allTrips.reduce(function (s, t) { return s + (parseDurationToMins(t.stopDuration) || 0); }, 0);
-  var numStops   = allTrips.length;
+  // Same counted set as the on-screen KPIs — overnight parks are not stops.
+  var counted    = allTrips.filter(function (t) { return legacyStopMins(t) != null; });
+  var totalStop  = counted.reduce(function (s, t) { return s + legacyStopMins(t); }, 0);
+  var numStops   = counted.length;
   var avgStop    = numStops ? totalStop / numStops : 0;
 
   function drawKpiRow(items, y) {
@@ -3069,7 +3140,7 @@ function exportLegacyTripHistoryPdf() {
         var t = r.trip;
         var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
         var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
-        var stopMins  = parseDurationToMins(t.stopDuration);
+        var stopMins  = legacyStopMins(t);
         body.push([
           fmtTime(t.start),
           milesFromDistance(t.distance).toFixed(2) + " mi\n" + fmtDurPrecise(driveMins),
@@ -3084,7 +3155,8 @@ function exportLegacyTripHistoryPdf() {
       var dayDistM = block.rows.reduce(function (s, r) { return s + (r.trip.distance || 0); }, 0);
       var dayDrive = block.rows.reduce(function (s, r) { var dm = parseDurationToMins(r.trip.drivingDuration); return s + (dm != null ? dm : durationMins(r.trip.start, r.trip.stop)); }, 0);
       var dayIdle  = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.idlingDuration) || 0); }, 0);
-      var dayStop  = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.stopDuration) || 0); }, 0);
+      var dayCount = block.rows.filter(function (r) { return legacyStopMins(r.trip) != null; });
+      var dayStop  = dayCount.reduce(function (s, r) { return s + legacyStopMins(r.trip); }, 0);
       var totalStyles = { fontStyle: "bold", fillColor: [245, 245, 245] };
       body.push([
         { content: block.date + " Total", styles: totalStyles },
@@ -3093,7 +3165,7 @@ function exportLegacyTripHistoryPdf() {
         { content: "", styles: totalStyles },
         { content: fmtDurWhole(dayIdle), styles: totalStyles },
         { content: fmtDurWhole(dayStop), styles: totalStyles },
-        { content: block.rows.length + " stops", styles: totalStyles }
+        { content: dayCount.length + " stops", styles: totalStyles }
       ]);
 
       doc.autoTable({

@@ -62,7 +62,14 @@ formally split into separate repos. Functions kept in sync include:
 `parseDurationToMins`, `fmtDurWhole`, `fmtDurPrecise`, `milesFromDistance`,
 `buildLegacyByDevice`, `resolveStopAddresses`, `formatReverseGeocodeAddress`,
 `addressForPoint`, `buildLegacyDayBlocks`, `renderLegacyTripHistoryOutput`,
-`exportLegacyTripHistoryPdf`, `drawPdfHeaderLogo`.
+`exportLegacyTripHistoryPdf`, `drawPdfHeaderLogo`, `localDayKey`,
+`buildLegacyStopInfo`, `legacyStopMins`, `OVERNIGHT_MIN_HOURS`.
+
+The parent also has an **Activity Report** that shares `buildLegacyByDevice`,
+`buildLegacyDayBlocks`, `resolveStopAddresses`, `addressForPoint` and
+`parseDurationToMins`. Anything put into those helpers changes both reports.
+The overnight rule below is deliberately kept out of them: it lives in
+`legacyStopMins`, which only the legacy call sites read.
 
 ---
 
@@ -75,12 +82,28 @@ formally split into separate repos. Functions kept in sync include:
   handles that plus ISO-8601 and numeric-seconds.
 - **"(Ignition On)" row** shows no duration on purpose — the gap to the previous
   trip is overnight/parked time, not idle, and Trip data has no pre-drive idle.
-- **Average Stop Duration** can be inflated by overnight parks, because Geotab's
-  `StopDuration` runs to the next trip's start. Accurate, matches the reference
-  tool; revisit if the customer wants cross-day gaps excluded.
+- **Overnight parks are excluded** (v1.1.0). `Trip.StopDuration` runs to the next
+  trip's start, so a van parked at 18:00 and driven at 07:00 arrived as a single
+  13-hour stop on the day's last trip and inflated Total and Average Stop
+  Duration. `buildLegacyStopInfo` now drops a stop when all three hold: it is
+  that vehicle's last trip of the **local** day, it runs longer than
+  `OVERNIGHT_MIN_HOURS` (3), and it ends on a later local day. A long mid-shift
+  stop that ends the same day still counts. Excluded stops show an em-dash and
+  are left out of the day total, Total Stop Duration, Average Stop Duration and
+  Number of Stops — so average x count still equals the total. A trip with no
+  `stopDuration` (usually the last in the range) is excluded for the same reason.
+  Removal is silent by design: no separate "Parked" column.
+- **Days are bucketed in local time** (v1.1.0), via `localDayKey`. Previously
+  `fmtDateShort` (`toISOString`) grouped in UTC while every displayed time was
+  local, so a 00:30 BST trip filed under the previous day. `fmtDateShort` itself
+  is unchanged — the parent still uses it for `bucketKeyFor` and the trips list.
 - **Simplification**: the reference format's "Working Total" vs after-hours
   "Total" split is collapsed into one daily total (Trip `Work*`/`AfterHours*`
   fields not yet used).
+- **Idle sits inside stop, not beside it.** Geotab's `StopDuration` "also
+  includes any idling done at the end of a trip", so "Total Stop Duration" and
+  "Total Idle Time" must not be added together. Not yet reflected in the
+  labelling — open cosmetic item.
 
 ---
 
@@ -88,5 +111,6 @@ formally split into separate repos. Functions kept in sync include:
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.0.0` — increment on each release.
+- Cache-bust: asset URLs use `?v=1.1.0` — increment on each release, and keep the
+  `version-badge` in index.html and `version` in config.json in step.
 - Push is manual (same workflow as the parent app).
