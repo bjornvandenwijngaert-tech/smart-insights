@@ -7,11 +7,13 @@ var PRESET_WIDGET_TYPES = {
     description: "Monthly CO\u2082 emissions and fuel efficiency across your fleet",
     color:       "#059669",
     chartType:   "bar",
-    statLabels:  ["Total CO\u2082", "Fleet MPG", "Best MPG"]
+    // Labels are fixed at load, before the user's units are known, so they name the
+    // measure rather than its unit. The values themselves carry the unit.
+    statLabels:  ["Total CO\u2082", "Fleet Economy", "Best Economy"]
   },
   "speeding": {
     label:       "Speeding",
-    description: "Trips exceeding a configurable speed threshold (default 80\u00a0mph)",
+    description: "Trips exceeding a configurable speed threshold",
     color:       "#DC2626",
     chartType:   "bar",
     statLabels:  ["Total", "Per Day", "Worst Day"],
@@ -26,10 +28,10 @@ var PRESET_WIDGET_TYPES = {
   // can be restored quickly if/when Geotab ships a public Maintenance Center API.
   "fuel-economy-daily": {
     label:       "Daily Fuel Economy",
-    description: "Daily fleet average MPG over the last 30 days",
+    description: "Daily fleet average fuel economy over the last 30 days",
     color:       "#059669",
     chartType:   "line",
-    statLabels:  ["Fleet MPG", "Best Day", "Worst Day"]
+    statLabels:  ["Fleet Economy", "Best Day", "Worst Day"]
   }
 };
 
@@ -51,7 +53,8 @@ var state = {
   legacyByDevice:   null,  // Legacy Trip History Report: { deviceId: { name, trips, drivers } }
   legacyAddrMap:    null,  // Legacy Trip History Report: "lat,lng" -> resolved address string
   legacyStopInfo:   null,  // Legacy Trip History Report: Map(trip -> { mins, excluded }) — see buildLegacyStopInfo
-  unitSystem:       "Imperial",  // loaded from SystemSettings on init ("Metric" or "Imperial")
+  unitSystem:       "Imperial",       // from the logged-in User.isMetric ("Metric" or "Imperial")
+  fuelEconomyUnit:  "MPGImperial",    // from the logged-in User.fuelEconomyUnit
   activityByDevice: null,  // Activity Report: { deviceId: { name, trips, drivers } }
   activityAddrMap:  null   // Activity Report: "lat,lng" -> resolved address string
 };
@@ -67,28 +70,27 @@ geotab.addin.smartInsights = function () {
           state.dbName = freshState.database;
           document.getElementById("db-name").textContent = freshState.database;
         }
-        // Load measurement system from database settings so distance renders in the
-        // correct unit without requiring the user to manually toggle.
-        apiCall("Get", { typeName: "SystemSettings" }, function (settings) {
-          if (settings && settings[0] && settings[0].measurementSystem) {
-            state.unitSystem = settings[0].measurementSystem; // "Metric" or "Imperial"
-          }
-        }, function () {}); // silent fail — stays Imperial
-        setupNav();
-        setupReports();
-        restoreActivitySettings(); // pre-fill Activity Report toolbar from last session
-        setupEditMode();
-        setupWidgetPicker();
-        setupModal();
-        setupParamEditor();
-        setupMap();
-        setupIncident();
-        // Keep the loading screen until AddInData has been fetched so the
-        // dashboard doesn't flash empty before widgets appear.
-        restoreDashboard(function () {
-          document.getElementById("loading").classList.add("hidden");
-          document.getElementById("main").classList.remove("hidden");
-          loadSuggestions();
+        // Units are a property of the person looking, not of the database, so they
+        // are resolved before anything renders — a widget that painted first would
+        // show miles to a metric user until the next refresh.
+        loadUserUnits(function () {
+          setupNav();
+          setupReports();
+          applyUnitLabels();         // stamp the user's units onto the static markup
+          restoreActivitySettings(); // pre-fill Activity Report toolbar from last session
+          setupEditMode();
+          setupWidgetPicker();
+          setupModal();
+          setupParamEditor();
+          setupMap();
+          setupIncident();
+          // Keep the loading screen until AddInData has been fetched so the
+          // dashboard doesn't flash empty before widgets appear.
+          restoreDashboard(function () {
+            document.getElementById("loading").classList.add("hidden");
+            document.getElementById("main").classList.remove("hidden");
+            loadSuggestions();
+          });
         });
       } catch (err) {
         showError("Init error: " + err.message);
@@ -99,6 +101,159 @@ geotab.addin.smartInsights = function () {
     blur:  function () {}
   };
 };
+
+// ─── Units ───────────────────────────────────────────────────────────────────
+// MyGeotab hands everything back metric regardless of who is asking: Trip.distance
+// in km, maximumSpeed/averageSpeed and LogRecord.speed in km/h, fuelUsed in litres,
+// Odometer in metres. How those get *displayed* is a property of the person looking,
+// not of the database — User.isMetric and User.fuelEconomyUnit are per-user regional
+// settings. Read once at init; SystemSettings.measurementSystem is only a fallback
+// for when the User read fails, and it is database-wide so it can disagree with the
+// user's own profile.
+//
+// Every figure in this file goes through these helpers. Do not reintroduce a bare
+// * 0.621371 or a hardcoded "mi"/"mph"/"MPG" at a call site.
+
+var MI_PER_KM       = 0.621371;
+var L_PER_UK_GALLON = 4.54609;
+var L_PER_US_GALLON = 3.785411784;
+
+// Resolve the logged-in user's regional settings, then hand control back.
+// Always calls cb exactly once — on failure we keep the Imperial defaults rather
+// than blocking the add-in from loading.
+function loadUserUnits(cb) {
+  var done = false;
+  function finish() { if (!done) { done = true; cb(); } }
+
+  function applyUser(user) {
+    if (user && typeof user.isMetric === "boolean") {
+      state.unitSystem = user.isMetric ? "Metric" : "Imperial";
+      state.fuelEconomyUnit = user.fuelEconomyUnit ||
+        (user.isMetric ? "LitersPer100Km" : "MPGImperial");
+      finish();
+      return true;
+    }
+    return false;
+  }
+
+  // Database-wide fallback. Used only when we cannot identify the current user.
+  function fallbackToSystemSettings() {
+    apiCall("Get", { typeName: "SystemSettings" }, function (settings) {
+      if (settings && settings[0] && settings[0].measurementSystem) {
+        state.unitSystem = settings[0].measurementSystem; // "Metric" or "Imperial"
+        state.fuelEconomyUnit = state.unitSystem === "Metric" ? "LitersPer100Km" : "MPGImperial";
+      }
+      finish();
+    }, finish);
+  }
+
+  function fetchUserByName(userName) {
+    if (!userName) { fallbackToSystemSettings(); return; }
+    apiCall("Get", { typeName: "User", search: { name: userName } }, function (users) {
+      if (!users || !users.length || !applyUser(users[0])) fallbackToSystemSettings();
+    }, fallbackToSystemSettings);
+  }
+
+  // getSession's callback shape has varied across MyGeotab versions — it has been
+  // called with a bare session, with (credentials, server), and with a result
+  // object wrapping .credentials. Read the username out of whichever we get
+  // rather than betting on one.
+  try {
+    if (state.api && typeof state.api.getSession === "function") {
+      var settled = false;
+      var guard = setTimeout(function () {
+        if (!settled) { settled = true; fallbackToSystemSettings(); }
+      }, 8000);
+      state.api.getSession(function (a) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(guard);
+        var creds = (a && a.credentials) || a || {};
+        fetchUserByName(creds.userName || creds.username);
+      });
+      return;
+    }
+  } catch (e) { /* fall through */ }
+  fallbackToSystemSettings();
+}
+
+function isMetric() { return state.unitSystem === "Metric"; }
+
+// ── Distance. Trip.distance is KILOMETRES; Odometer / nextOdometerReading are metres.
+function distUnit()      { return isMetric() ? "km" : "mi"; }
+function distVal(km)     { return isMetric() ? (km || 0) : (km || 0) * MI_PER_KM; }
+function fmtDist(km, dp) { return distVal(km).toFixed(dp == null ? 1 : dp) + " " + distUnit(); }
+
+// ── Speed. Trip.maximumSpeed / averageSpeed and LogRecord.speed are km/h.
+function speedUnit()   { return isMetric() ? "km/h" : "mph"; }
+function speedVal(kmh) { return isMetric() ? (kmh || 0) : (kmh || 0) * MI_PER_KM; }
+function fmtSpeed(kmh) { return kmh ? speedVal(kmh).toFixed(0) + " " + speedUnit() : "—"; }
+
+// Speed thresholds are persisted as mph (`params.thresholdMph`) because saved
+// dashboards already contain that field — converting the stored value would
+// silently rescale every existing widget. The UI shows and accepts the user's
+// own unit and converts at the boundary instead.
+function threshToDisplay(mph) { return isMetric() ? Math.round((mph || 0) / MI_PER_KM) : (mph || 0); }
+function threshFromDisplay(v) { return isMetric() ? (v || 0) * MI_PER_KM : (v || 0); }
+
+// ── Fuel economy. Honours the user's own fuelEconomyUnit rather than assuming a
+// gallon: MPGImperial and MPGUS differ by ~20%, and a metric user wants L/100km,
+// where LOWER is better — hence economyHigherIsBetter() for any sort or "best".
+function economyUnit() {
+  switch (state.fuelEconomyUnit) {
+    case "MPGImperial":    return "mpg (imp)";
+    case "MPGUS":          return "mpg (US)";
+    case "KmPerLiter":     return "km/L";
+    case "KmPerGallon":    return "km/gal";
+    case "GallonPer100Km": return "gal/100km";
+    default:               return "L/100km";
+  }
+}
+// Returns a number, or null when it cannot be computed. km + litres in.
+function economyNum(km, fuelL) {
+  if (!fuelL || fuelL <= 0 || !km) return null;
+  switch (state.fuelEconomyUnit) {
+    case "MPGImperial":    return (km * MI_PER_KM) / (fuelL / L_PER_UK_GALLON);
+    case "MPGUS":          return (km * MI_PER_KM) / (fuelL / L_PER_US_GALLON);
+    case "KmPerLiter":     return km / fuelL;
+    case "KmPerGallon":    return km / (fuelL / L_PER_US_GALLON);
+    case "GallonPer100Km": return ((fuelL / L_PER_US_GALLON) / km) * 100;
+    default:               return (fuelL / km) * 100; // LitersPer100Km
+  }
+}
+function economyHigherIsBetter() {
+  return state.fuelEconomyUnit !== "LitersPer100Km" && state.fuelEconomyUnit !== "GallonPer100Km";
+}
+function fmtEconomy(km, fuelL) {
+  var v = economyNum(km, fuelL);
+  return v == null ? "—" : v.toFixed(1);
+}
+// Best of a list of economy numbers, respecting direction. null when list is empty.
+function bestEconomy(values) {
+  var v = values.filter(function (n) { return n != null && isFinite(n) && n > 0; });
+  if (!v.length) return null;
+  return economyHigherIsBetter() ? Math.max.apply(null, v) : Math.min.apply(null, v);
+}
+function worstEconomy(values) {
+  var v = values.filter(function (n) { return n != null && isFinite(n) && n > 0; });
+  if (!v.length) return null;
+  return economyHigherIsBetter() ? Math.min.apply(null, v) : Math.max.apply(null, v);
+}
+
+// ── Fuel volume stays in litres in both systems: that is what the API returns and
+// User carries no volume preference, only a fuel-economy one. The economy figure
+// above already respects imperial vs US gallons.
+function volUnit() { return "L"; }
+
+// Stamp the resolved units onto markup that is written statically in index.html.
+function applyUnitLabels() {
+  var thUnit = document.getElementById("speed-thresh-unit");
+  if (thUnit) thUnit.textContent = speedUnit();
+  var thInput = document.getElementById("filter-speed-thresh");
+  if (thInput) thInput.value = threshToDisplay(80);
+  var speedOpt = document.querySelector("#report-type option[value='speeding']");
+  if (speedOpt) speedOpt.textContent = "Speeding >" + threshToDisplay(80) + speedUnit();
+}
 
 // ─── Navigation ─────────────────────────────────────────────────────────────
 function setupNav() {
@@ -326,7 +481,7 @@ function renderTripsOutput(trips, deviceMap) {
   var sorted = trips.slice().sort(function (a, b) { return new Date(b.start) - new Date(a.start); });
   output.innerHTML = sorted.map(function (t) {
     var vName = deviceMap ? (deviceMap[t.device && t.device.id] || "Unknown") : (state.deviceMap[t.device && t.device.id] || "Unknown");
-    var dist  = (t.distance || 0).toFixed(1);
+    var dist  = fmtDist(t.distance, 1);
     var mins  = durationMins(t.start, t.stop);
     return "<div class='trip-card'>" +
       "<div class='trip-top'>" +
@@ -335,8 +490,8 @@ function renderTripsOutput(trips, deviceMap) {
         "<div class='trip-time'>" + fmtDateShort(t.start) + "<br>" + fmtTime(t.start) + " &rarr; " + fmtTime(t.stop) + "</div>" +
       "</div>" +
       "<div class='trip-meta'>" +
-        tripStat("Distance", dist + " km") + tripStat("Duration", fmtMins(mins)) +
-        tripStat("Max Speed", mphStr(t.maximumSpeed)) + tripStat("Avg Speed", mphStr(t.averageSpeed)) +
+        tripStat("Distance", dist) + tripStat("Duration", fmtMins(mins)) +
+        tripStat("Max Speed", fmtSpeed(t.maximumSpeed)) + tripStat("Avg Speed", fmtSpeed(t.averageSpeed)) +
       "</div>" +
     "</div>";
   }).join("");
@@ -374,11 +529,11 @@ function runCarbonReport(from, to, done) {
       var totalCo2  = fuelTrips.reduce(function (s, t) { return s + (t.fuelUsed || 0) * 2.4; }, 0);
       var totalFuel = fuelTrips.reduce(function (s, t) { return s + (t.fuelUsed || 0); }, 0);
       var totalDistM= fuelTrips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
-      var fleetMpg  = calcMpg(totalDistM, totalFuel);
+      var fleetEcon = fmtEconomy(totalDistM, totalFuel);
       showReportSummary([
         summaryCard("Total CO\u2082",    Math.round(totalCo2), "kg"),
-        summaryCard("Fleet MPG",         fleetMpg, ""),
-        summaryCard("Total Fuel",         totalFuel.toFixed(0), "L"),
+        summaryCard("Fleet Economy",     fleetEcon, economyUnit()),
+        summaryCard("Total Fuel",         totalFuel.toFixed(0), volUnit()),
         summaryCard("Vehicles Reporting", Object.keys(byVehicle).length, "")
       ]);
       renderCarbonOutput(Object.values(byVehicle));
@@ -393,20 +548,23 @@ function renderCarbonOutput(rows) {
   if (!rows.length) { output.innerHTML = "<p class='placeholder'>No data.</p>"; return; }
   var sorted = rows.slice().sort(function (a, b) { return b.co2 - a.co2; });
   output.innerHTML = "<div class='dd-table-wrap'><table class='dd-table'>" +
-    "<thead><tr><th>Vehicle</th><th>CO\u2082 (kg)</th><th>MPG</th><th>Distance</th><th>Trips</th></tr></thead><tbody>" +
+    "<thead><tr><th>Vehicle</th><th>CO\u2082 (kg)</th><th>" + esc(economyUnit()) + "</th><th>Distance</th><th>Trips</th></tr></thead><tbody>" +
     sorted.map(function (r) {
       return "<tr><td class='td-vehicle'>" + esc(r.name) + "</td>" +
         "<td>" + Math.round(r.co2) + " kg</td>" +
-        "<td>" + calcMpg(r.distM, r.fuel) + "</td>" +
-        "<td>" + ((r.distM * 0.621371).toFixed(1)) + " mi</td>" +
+        "<td>" + fmtEconomy(r.distM, r.fuel) + "</td>" +
+        "<td>" + fmtDist(r.distM, 1) + "</td>" +
         "<td>" + r.trips + "</td></tr>";
     }).join("") + "</tbody></table></div>";
 }
 // ── Speeding report (configurable threshold) ──────────────────────────────────
 function runSpeedingReport(from, to, done) {
+  // The box holds a number in the user's own unit; convert to the mph the rest of
+  // the app stores, then to the km/h the API speaks.
   var thEl    = document.getElementById("filter-speed-thresh");
-  var thMph   = thEl ? (parseFloat(thEl.value) || 80) : 80;
-  var thKmh   = thMph / 0.621371;
+  var thShown = thEl ? (parseFloat(thEl.value) || threshToDisplay(80)) : threshToDisplay(80);
+  var thMph   = threshFromDisplay(thShown);
+  var thKmh   = thMph / MI_PER_KM;
   var fromDate = new Date(from + "T00:00:00").toISOString();
   var toDate   = new Date(to   + "T23:59:59").toISOString();
   apiCall("Get", { typeName: "Device", search: {} }, function (devices) {
@@ -422,9 +580,9 @@ function runSpeedingReport(from, to, done) {
       speeding.forEach(function (t) { if (t.device) vehicles[t.device.id] = 1; });
       var maxSpeedTrip = speeding.reduce(function (m, t) { return (t.maximumSpeed || 0) > (m.maximumSpeed || 0) ? t : m; }, {});
       showReportSummary([
-        summaryCard("Incidents >" + thMph + "mph", speeding.length, ""),
+        summaryCard("Incidents >" + Math.round(thShown) + speedUnit(), speeding.length, ""),
         summaryCard("Vehicles",          Object.keys(vehicles).length, ""),
-        summaryCard("Highest Speed",     maxSpeedTrip.maximumSpeed ? toMph(maxSpeedTrip.maximumSpeed).toFixed(0) : "—", "mph"),
+        summaryCard("Highest Speed",     maxSpeedTrip.maximumSpeed ? speedVal(maxSpeedTrip.maximumSpeed).toFixed(0) : "—", speedUnit()),
         summaryCard("Period",            from + " \u2013 " + to, "")
       ]);
       renderSpeedingOutput(speeding, deviceMap);
@@ -436,7 +594,7 @@ function runSpeedingReport(from, to, done) {
 
 function renderSpeedingOutput(trips, deviceMap) {
   var output = document.getElementById("report-output");
-  if (!trips.length) { output.innerHTML = "<p class='placeholder'>No trips exceeding 80mph found for this period.</p>"; return; }
+  if (!trips.length) { output.innerHTML = "<p class='placeholder'>No trips exceeding the speed threshold found for this period.</p>"; return; }
   var sorted = trips.slice().sort(function (a, b) { return (b.maximumSpeed || 0) - (a.maximumSpeed || 0); });
   output.innerHTML = "<div class='dd-table-wrap'><table class='dd-table'>" +
     "<thead><tr><th>Vehicle</th><th>Driver</th><th>Date</th><th>Start Time</th><th>Max Speed</th><th>Distance</th></tr></thead><tbody>" +
@@ -447,8 +605,8 @@ function renderSpeedingOutput(trips, deviceMap) {
         "<td class='td-driver'>" + esc(t.driverName || "Unassigned") + "</td>" +
         "<td>" + fmtDateReadable(t.start) + "</td>" +
         "<td>" + fmtTime(t.start) + "</td>" +
-        "<td><span class='speed-badge'>" + toMph(t.maximumSpeed || 0).toFixed(0) + " mph</span></td>" +
-        "<td>" + ((t.distance || 0) * 0.621371).toFixed(1) + " mi</td></tr>";
+        "<td><span class='speed-badge'>" + fmtSpeed(t.maximumSpeed || 0) + "</span></td>" +
+        "<td>" + fmtDist(t.distance, 1) + "</td></tr>";
     }).join("") + "</tbody></table></div>";
 }
 
@@ -468,7 +626,7 @@ function runMaintenanceUpcomingReport(done) {
           what:      r.comment || r.description || "Scheduled maintenance",
           dueDate:   dueDate,
           dueDateStr:dueDate ? fmtDateReadable(dueDate.toISOString()) : "—",
-          odometer:  r.nextOdometerReading ? (r.nextOdometerReading / 1000).toFixed(0) + " km" : "—",
+          odometer:  r.nextOdometerReading ? fmtDist(r.nextOdometerReading / 1000, 0) : "—",
           daysUntil: daysUntil
         };
       }).filter(function (r) { return r.dueDate; });
@@ -613,13 +771,14 @@ function runFuelEconomyReport(from, to, done) {
       populateReportVehicleFilter(fuelTrips, deviceMap);
       var totalFuel  = fuelTrips.reduce(function (s, t) { return s + (t.fuelUsed || 0); }, 0);
       var totalDistM = fuelTrips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
-      var fleetMpg   = calcMpg(totalDistM, totalFuel);
-      var mpgValues  = rows.map(function (r) { return parseFloat(calcMpg(r.distM, r.fuel)) || 0; }).filter(function (v) { return v > 0; });
-      var bestMpg    = mpgValues.length ? Math.max.apply(null, mpgValues).toFixed(1) : "—";
+      var fleetEcon  = fmtEconomy(totalDistM, totalFuel);
+      // "Best" is not always the biggest number — in L/100km and gal/100km, lower wins.
+      var econValues = rows.map(function (r) { return economyNum(r.distM, r.fuel); });
+      var best       = bestEconomy(econValues);
       showReportSummary([
-        summaryCard("Fleet MPG",    fleetMpg, ""),
-        summaryCard("Best Vehicle", bestMpg, "mpg"),
-        summaryCard("Total Fuel",   totalFuel.toFixed(0), "L"),
+        summaryCard("Fleet Economy", fleetEcon, economyUnit()),
+        summaryCard("Best Vehicle", best == null ? "—" : best.toFixed(1), economyUnit()),
+        summaryCard("Total Fuel",   totalFuel.toFixed(0), volUnit()),
         summaryCard("Vehicles",     rows.length, "")
       ]);
       renderFuelEconomyOutput(rows);
@@ -632,14 +791,21 @@ function runFuelEconomyReport(from, to, done) {
 function renderFuelEconomyOutput(rows) {
   var output = document.getElementById("report-output");
   if (!rows.length) { output.innerHTML = "<p class='placeholder'>No data.</p>"; return; }
-  var sorted = rows.slice().sort(function (a, b) { return parseFloat(calcMpg(b.distM, b.fuel)) - parseFloat(calcMpg(a.distM, a.fuel)); });
+  // Best-first, which flips direction for the "lower is better" units.
+  var dir = economyHigherIsBetter() ? -1 : 1;
+  var sorted = rows.slice().sort(function (a, b) {
+    var ea = economyNum(a.distM, a.fuel), eb = economyNum(b.distM, b.fuel);
+    if (ea == null) return 1;
+    if (eb == null) return -1;
+    return (ea - eb) * dir;
+  });
   output.innerHTML = "<div class='dd-table-wrap'><table class='dd-table'>" +
-    "<thead><tr><th>Vehicle</th><th>MPG</th><th>Distance</th><th>Fuel Used</th><th>Trips</th></tr></thead><tbody>" +
+    "<thead><tr><th>Vehicle</th><th>" + esc(economyUnit()) + "</th><th>Distance</th><th>Fuel Used</th><th>Trips</th></tr></thead><tbody>" +
     sorted.map(function (r) {
       return "<tr><td class='td-vehicle'>" + esc(r.name) + "</td>" +
-        "<td><strong>" + calcMpg(r.distM, r.fuel) + "</strong></td>" +
-        "<td>" + (r.distM * 0.621371).toFixed(1) + " mi</td>" +
-        "<td>" + r.fuel.toFixed(1) + " L</td>" +
+        "<td><strong>" + fmtEconomy(r.distM, r.fuel) + "</strong></td>" +
+        "<td>" + fmtDist(r.distM, 1) + "</td>" +
+        "<td>" + r.fuel.toFixed(1) + " " + volUnit() + "</td>" +
         "<td>" + r.trips + "</td></tr>";
     }).join("") + "</tbody></table></div>";
 }
@@ -704,10 +870,9 @@ function fmtDurPrecise(mins) {
 }
 // Trip.Distance is in KILOMETRES per the MyGeotab SDK (confirmed against live
 // data: a multi-hour drive showed ~0.01 mi when distance was wrongly treated as
-// metres). 1 km = 0.621371 miles. All reports in this file now treat distance as
-// km: km->mi via *0.621371, and calcMpg() takes km. (Historically the code
-// wrongly divided by 1609.344 / 1000, making distances & MPG ~1000x too small.)
-function milesFromDistance(km) { return (km || 0) * 0.621371; }
+// metres). All reports in this file treat distance as km and convert for display
+// through distVal()/fmtDist() in the Units section. (Historically the code
+// wrongly divided by 1609.344 / 1000, making distances ~1000x too small.)
 
 // ─── Overnight parking (Legacy Trip History only) ──────────────────────────
 // Trip.StopDuration runs from the engine stopping to the NEXT trip's start, so a
@@ -841,6 +1006,13 @@ function formatReverseGeocodeAddress(addr) {
   return parts.length ? parts.join(" ") : null;
 }
 
+// Where a trip began. Trip has no startPoint — a vehicle starts where it last
+// stopped, so the previous trip's stopPoint is the start location. The first trip
+// of the fetched range has no predecessor and is genuinely unknown.
+function startAddressForRow(row, addrMap) {
+  return addressForPoint(row.prevTrip ? row.prevTrip.stopPoint : null, addrMap);
+}
+
 function addressForPoint(pt, addrMap) {
   if (!pt || pt.y == null || pt.x == null) return "(location unknown)";
   var resolved = addrMap[coordKey(pt)];
@@ -882,7 +1054,7 @@ function runLegacyTripHistoryReport(from, to, done) {
         var avgStop     = numStops ? totalStop / numStops : 0;
 
         showReportSummary([
-          summaryCard("Total Distance",  milesFromDistance(totalDistM).toFixed(0), "mi"),
+          summaryCard("Total Distance",  distVal(totalDistM).toFixed(0), distUnit()),
           summaryCard("Total Stop Duration", fmtDurWhole(totalStop), ""),
           summaryCard("Total Idle Time", fmtDurWhole(totalIdle), ""),
           summaryCard("Total Travel Duration", fmtDurWhole(totalDrive), ""),
@@ -933,7 +1105,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
         var stopStr   = stopMins != null ? fmtDurPrecise(stopMins) : "\u2014";
         return "<tr>" +
           "<td>" + fmtTime(t.start) + "</td>" +
-          "<td>" + milesFromDistance(t.distance).toFixed(2) + " mi<br><span style='color:var(--text-muted);font-size:11px'>" + fmtDurPrecise(driveMins) + "</span></td>" +
+          "<td>" + fmtDist(t.distance, 2) + "<br><span style='color:var(--text-muted);font-size:11px'>" + fmtDurPrecise(driveMins) + "</span></td>" +
           "<td>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>" +
           "<td>" + fmtTime(t.stop) + "</td>" +
           "<td>" + fmtDurPrecise(idleMins) + "</td>" +
@@ -960,7 +1132,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
       return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table'>" +
         "<thead><tr><th>Start Time</th><th>Distance / Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th></tr></thead>" +
         "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml +
-        "<tr style='font-weight:700;background:var(--surface-2)'><td>" + block.date + " Total</td><td>" + milesFromDistance(dayDistM).toFixed(2) + " mi in " + fmtDurWhole(dayDrive) + "</td><td></td><td>" + dayCount.length + " stops</td><td>" + fmtDurWhole(dayIdle) + "</td><td>" + fmtDurWhole(dayStop) + "</td></tr>" +
+        "<tr style='font-weight:700;background:var(--surface-2)'><td>" + block.date + " Total</td><td>" + fmtDist(dayDistM, 2) + " in " + fmtDurWhole(dayDrive) + "</td><td></td><td>" + dayCount.length + " stops</td><td>" + fmtDurWhole(dayIdle) + "</td><td>" + fmtDurWhole(dayStop) + "</td></tr>" +
         "</tbody></table></div>";
     }).join("");
 
@@ -974,14 +1146,10 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
 // An enhanced trip history report with unit-aware distance, selectable engine-hour
 // columns, Excel export, and localStorage settings persistence.
 
-function fmtActivityDistance(km) {
-  if (state.unitSystem === "Metric") return (km || 0).toFixed(2) + " km";
-  return milesFromDistance(km).toFixed(2) + " mi";
-}
+function fmtActivityDistance(km) { return fmtDist(km, 2); }
 
 function fmtActivityDistanceKpi(km) {
-  if (state.unitSystem === "Metric") return { value: (km || 0).toFixed(0), unit: "km" };
-  return { value: milesFromDistance(km).toFixed(0), unit: "mi" };
+  return { value: distVal(km).toFixed(0), unit: distUnit() };
 }
 
 function getActivityCols() {
@@ -1103,7 +1271,7 @@ function renderActivityReport(byDevice, addrMap) {
   var vids   = Object.keys(byDevice);
   if (!vids.length) { output.innerHTML = "<p class='placeholder'>No trips found.</p>"; return; }
   var extraHeaders = activityEngineColHeaders(cols);
-  var baseHeaders  = ["Start Time", "Distance / Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
+  var baseHeaders  = ["Start Time", "Start Location", "Distance / Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
   var allHeaders   = baseHeaders.concat(extraHeaders);
   var colSpan      = allHeaders.length;
 
@@ -1121,6 +1289,7 @@ function renderActivityReport(byDevice, addrMap) {
         var engineVals= activityEngineColValues(t, cols);
         return "<tr>" +
           "<td>" + fmtTime(t.start) + "</td>" +
+          "<td>" + esc(startAddressForRow(r, addrMap)) + "</td>" +
           "<td>" + fmtActivityDistance(t.distance) + "<br><span style='color:var(--text-muted);font-size:11px'>" + fmtDurPrecise(driveMins) + "</span></td>" +
           "<td>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>" +
           "<td>" + fmtTime(t.stop) + "</td>" +
@@ -1140,11 +1309,12 @@ function renderActivityReport(byDevice, addrMap) {
       var prevTrip  = block.rows[0].prevTrip;
       var startingFromHtml = "<tr><td colspan='" + colSpan + "' style='font-weight:600;background:var(--surface-2)'>" + block.date + " — Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
       var ignitionHtml = prevTrip
-        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='3'>(Ignition On)</td><td>—</td><td></td>" + cols.map(function () { return "<td></td>"; }).join("") + "</tr>"
+        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='4'>(Ignition On)</td><td>—</td><td></td>" + extraHeaders.map(function () { return "<td></td>"; }).join("") + "</tr>"
         : "";
 
       var totalRowCells = [
         "<td>" + block.date + " Total</td>",
+        "<td></td>",
         "<td>" + fmtActivityDistance(dayDistKm) + " in " + fmtDurWhole(dayDrive) + "</td>",
         "<td></td>",
         "<td>" + block.rows.length + " stops</td>",
@@ -1268,30 +1438,30 @@ function exportReportCsv() {
   if (!data || !data.length) return;
   var rows = [];
   if (type === "trips") {
-    rows = [["Vehicle","Driver","Date","Start","Stop","Distance (km)","Duration","Max Speed (mph)","Avg Speed (mph)"]];
+    rows = [["Vehicle","Driver","Date","Start","Stop","Distance (" + distUnit() + ")","Duration","Max Speed (" + speedUnit() + ")","Avg Speed (" + speedUnit() + ")"]];
     data.forEach(function (t) {
       rows.push([
         state.deviceMap[t.device && t.device.id] || "",
         t.driverName || "",
         fmtDateShort(t.start), fmtTime(t.start), fmtTime(t.stop),
-        (t.distance || 0).toFixed(1),
+        distVal(t.distance).toFixed(1),
         fmtMins(durationMins(t.start, t.stop)),
-        toMph(t.maximumSpeed || 0).toFixed(0),
-        toMph(t.averageSpeed  || 0).toFixed(0)
+        speedVal(t.maximumSpeed || 0).toFixed(0),
+        speedVal(t.averageSpeed  || 0).toFixed(0)
       ]);
     });
   } else if (type === "carbon-monthly") {
-    rows = [["Vehicle","CO2 (kg)","MPG","Distance (mi)","Trips"]];
-    data.forEach(function (r) { rows.push([r.name, Math.round(r.co2), calcMpg(r.distM, r.fuel), (r.distM*0.621371).toFixed(1), r.trips]); });
+    rows = [["Vehicle","CO2 (kg)",economyUnit(),"Distance (" + distUnit() + ")","Trips"]];
+    data.forEach(function (r) { rows.push([r.name, Math.round(r.co2), fmtEconomy(r.distM, r.fuel), distVal(r.distM).toFixed(1), r.trips]); });
   } else if (type === "speeding") {
-    rows = [["Vehicle","Driver","Date","Start Time","Max Speed (mph)","Distance (mi)"]];
+    rows = [["Vehicle","Driver","Date","Start Time","Max Speed (" + speedUnit() + ")","Distance (" + distUnit() + ")"]];
     data.forEach(function (t) {
       rows.push([
         state.deviceMap[t.device && t.device.id] || "",
         t.driverName || "",
         fmtDateReadable(t.start), fmtTime(t.start),
-        toMph(t.maximumSpeed || 0).toFixed(0),
-        ((t.distance || 0) * 0.621371).toFixed(1)
+        speedVal(t.maximumSpeed || 0).toFixed(0),
+        distVal(t.distance).toFixed(1)
       ]);
     });
   } else if (type === "maintenance-upcoming") {
@@ -1301,11 +1471,11 @@ function exportReportCsv() {
     rows = [["Vehicle","Description","Date","Cost","Status"]];
     data.forEach(function (r) { rows.push([r.vehicle, r.what, r.dateStr, r.cost != null ? r.cost.toFixed(2) : "", r.status]); });
   } else if (type === "fuel-economy-daily") {
-    rows = [["Vehicle","MPG","Distance (mi)","Fuel (L)","Trips"]];
-    data.forEach(function (r) { rows.push([r.name, calcMpg(r.distM, r.fuel), (r.distM*0.621371).toFixed(1), r.fuel.toFixed(1), r.trips]); });
+    rows = [["Vehicle",economyUnit(),"Distance (" + distUnit() + ")","Fuel (" + volUnit() + ")","Trips"]];
+    data.forEach(function (r) { rows.push([r.name, fmtEconomy(r.distM, r.fuel), distVal(r.distM).toFixed(1), r.fuel.toFixed(1), r.trips]); });
   } else if (type === "legacy-trip-history") {
     var addrMap = state.legacyAddrMap || {};
-    rows = [["Vehicle","Driver(s)","Date","Start Time","Distance (mi)","Driving Duration","Stop Location","Arrival Time","Idle Duration","Stop Duration"]];
+    rows = [["Vehicle","Driver(s)","Date","Start Time","Distance (" + distUnit() + ")","Driving Duration","Stop Location","Arrival Time","Idle Duration","Stop Duration"]];
     var byDevice = buildLegacyByDevice(data, state.deviceMap);
     Object.keys(byDevice).forEach(function (vid) {
       var v = byDevice[vid];
@@ -1316,7 +1486,7 @@ function exportReportCsv() {
         var stopMins  = legacyStopMins(t);
         rows.push([
           v.name, driverNames, localDayKey(t.start), fmtTime(t.start),
-          milesFromDistance(t.distance).toFixed(2), fmtDurPrecise(driveMins),
+          distVal(t.distance).toFixed(2), fmtDurPrecise(driveMins),
           addressForPoint(t.stopPoint, addrMap), fmtTime(t.stop),
           fmtDurPrecise(idleMins), stopMins != null ? fmtDurPrecise(stopMins) : ""
         ]);
@@ -1333,20 +1503,21 @@ function exportActivityCsv() {
   if (!data || !data.length) return;
   var from = document.getElementById("filter-from").value;
   var to   = document.getElementById("filter-to").value;
-  var distUnit = state.unitSystem === "Metric" ? "km" : "mi";
-  var baseHeaders = ["Vehicle", "Driver(s)", "Date", "Start Time", "Distance (" + distUnit + ")", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
+  var baseHeaders = ["Vehicle", "Driver(s)", "Date", "Start Time", "Start Location", "Distance (" + distUnit() + ")", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
   var rows = [baseHeaders.concat(activityEngineColHeaders(cols))];
   var byDevice = buildLegacyByDevice(data, state.deviceMap);
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
     var driverNames = Object.keys(v.drivers).join(", ") || "No driver assigned";
-    v.trips.forEach(function (t) {
+    v.trips.forEach(function (t, i) {
       var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
       var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
       var stopMins  = parseDurationToMins(t.stopDuration);
+      // trips are sorted per vehicle, so the previous one holds this trip's origin
+      var startAddr = startAddressForRow({ prevTrip: i > 0 ? v.trips[i - 1] : null }, addrMap);
       var baseRow = [
-        v.name, driverNames, fmtDateShort(t.start), fmtTime(t.start),
-        fmtActivityDistance(t.distance), fmtDurPrecise(driveMins),
+        v.name, driverNames, fmtDateShort(t.start), fmtTime(t.start), startAddr,
+        distVal(t.distance).toFixed(2), fmtDurPrecise(driveMins),
         addressForPoint(t.stopPoint, addrMap), fmtTime(t.stop),
         fmtDurPrecise(idleMins), stopMins != null ? fmtDurPrecise(stopMins) : ""
       ];
@@ -1413,14 +1584,17 @@ function exportActivityPdf() {
   ], yPos);
   yPos += 20;
   drawKpiRow([
-    { label: "Total Distance (" + (state.unitSystem === "Metric" ? "km" : "mi") + ")", value: distKpi.value },
+    { label: "Total Distance (" + distKpi.unit + ")", value: distKpi.value },
     { label: "Average Stop Duration", value: fmtDurWhole(avgStop) },
     { label: "Number of Stops",       value: String(numStops) }
   ], yPos);
   yPos += 24;
 
   var extraHeaders = activityEngineColHeaders(cols);
-  var headers = [["Start Time", "Distance / Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"].concat(extraHeaders)];
+  var headers = [["Start Time", "Start Location", "Distance / Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"].concat(extraHeaders)];
+  // Two free-text address columns in one landscape row will squeeze everything else
+  // unless they are pinned; the rest of the columns hold short fixed-width values.
+  var pdfColumnStyles = { 0: { cellWidth: 16 }, 1: { cellWidth: 52 }, 2: { cellWidth: 26 }, 3: { cellWidth: 52 }, 4: { cellWidth: 16 } };
 
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
@@ -1436,11 +1610,11 @@ function exportActivityPdf() {
       var body = [];
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
-      var numCols   = 6 + extraHeaders.length;
+      var numCols   = 7 + extraHeaders.length;
       body.push([{ content: block.date + "  Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap), colSpan: numCols, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
 
       if (prevTrip) {
-        var ignRow = [fmtTime(firstTrip.start), { content: "(Ignition On)", colSpan: 3, styles: { textColor: [217, 119, 6] } }, "—", ""];
+        var ignRow = [fmtTime(firstTrip.start), { content: "(Ignition On)", colSpan: 4, styles: { textColor: [217, 119, 6] } }, "—", ""];
         for (var ei = 0; ei < extraHeaders.length; ei++) ignRow.push("");
         body.push(ignRow);
       }
@@ -1452,6 +1626,7 @@ function exportActivityPdf() {
         var stopMins  = parseDurationToMins(t.stopDuration);
         var row = [
           fmtTime(t.start),
+          startAddressForRow(r, addrMap),
           fmtActivityDistance(t.distance) + "\n" + fmtDurPrecise(driveMins),
           addressForPoint(t.stopPoint, addrMap),
           fmtTime(t.stop),
@@ -1468,6 +1643,7 @@ function exportActivityPdf() {
       var totalStyles = { fontStyle: "bold", fillColor: [245, 245, 245] };
       var totalRow = [
         { content: block.date + " Total", styles: totalStyles },
+        { content: "", styles: totalStyles },
         { content: fmtActivityDistance(dayDistKm) + " in " + fmtDurWhole(dayDrive), styles: totalStyles },
         { content: "", styles: totalStyles },
         { content: "", styles: totalStyles },
@@ -1482,7 +1658,8 @@ function exportActivityPdf() {
       doc.autoTable({
         startY: yPos, head: headers, body: body,
         margin: { left: margin, right: margin },
-        styles: { fontSize: 7.5, cellPadding: 2, textColor: [45, 55, 72] },
+        columnStyles: pdfColumnStyles,
+        styles: { fontSize: 7.5, cellPadding: 2, textColor: [45, 55, 72], overflow: "linebreak" },
         headStyles: { fillColor: [0, 120, 212], textColor: 255, fontStyle: "bold", fontSize: 7.5 }
       });
       yPos = doc.lastAutoTable.finalY + 6;
@@ -1508,7 +1685,7 @@ function exportActivityExcel() {
   if (typeof ExcelJS === "undefined") { alert("Excel library not loaded. Please check your internet connection."); return; }
   var from     = document.getElementById("filter-from").value;
   var to       = document.getElementById("filter-to").value;
-  var distUnit = state.unitSystem === "Metric" ? "km" : "mi";
+  var dUnit    = distUnit();
   var vids     = Object.keys(byDevice);
 
   // ── Build per-vehicle KPI data ────────────────────────────────────────────
@@ -1536,7 +1713,7 @@ function exportActivityExcel() {
   var engineColor = "#059669";
 
   var distValues   = vehicleKpis.map(function (k) {
-    return state.unitSystem === "Metric" ? parseFloat(k.distKm.toFixed(2)) : parseFloat(milesFromDistance(k.distKm).toFixed(2));
+    return parseFloat(distVal(k.distKm).toFixed(2));
   });
   var engineValues = vehicleKpis.map(function (k) {
     return parseFloat((k.engineMins / 60).toFixed(2)); // hours
@@ -1548,7 +1725,7 @@ function exportActivityExcel() {
       labels: vehicleKpis.map(function (k) { return k.name; }),
       datasets: [
         {
-          label: "Distance (" + distUnit + ")",
+          label: "Distance (" + dUnit + ")",
           data: distValues,
           backgroundColor: distColor,
           borderRadius: 4
@@ -1612,7 +1789,7 @@ function exportActivityExcel() {
   hdrRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8F4FD" } };
 
   var kpiData = [
-    ["Total Distance (" + distUnit + ")", distKpi.value + " " + distKpi.unit],
+    ["Total Distance (" + dUnit + ")", distKpi.value + " " + distKpi.unit],
     ["Total Travel Duration", fmtDurWhole(totalDrive)],
     ["Total Idle Time", fmtDurWhole(totalIdle)],
     ["Total Stop Duration", fmtDurWhole(totalStop)],
@@ -1628,9 +1805,9 @@ function exportActivityExcel() {
 
   // ── Per-vehicle sheets ────────────────────────────────────────────────────
   var extraHeaders  = activityEngineColHeaders(cols);
-  var baseHeaders   = ["Start Time", "Distance (" + distUnit + ")", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
+  var baseHeaders   = ["Start Time", "Start Location", "Distance (" + dUnit + ")", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
   var allColHeaders = baseHeaders.concat(extraHeaders);
-  var colWidths     = [{ width: 12 }, { width: 16 }, { width: 42 }, { width: 12 }, { width: 16 }, { width: 16 }]
+  var colWidths     = [{ width: 12 }, { width: 42 }, { width: 16 }, { width: 42 }, { width: 12 }, { width: 16 }, { width: 16 }]
                        .concat(extraHeaders.map(function () { return { width: 22 }; }));
 
   vids.forEach(function (vid) {
@@ -1662,7 +1839,7 @@ function exportActivityExcel() {
 
       // Ignition On row
       if (prevTrip) {
-        var ignRow = [fmtTime(block.rows[0].trip.start), "(Ignition On)", "", "", "—", ""];
+        var ignRow = [fmtTime(block.rows[0].trip.start), "(Ignition On)", "", "", "", "—", ""];
         for (var ei = 0; ei < extraHeaders.length; ei++) ignRow.push("");
         var iRow = ws.addRow(ignRow);
         iRow.font = { color: { argb: "FFD97706" } };
@@ -1676,6 +1853,7 @@ function exportActivityExcel() {
         var stopMins  = parseDurationToMins(t.stopDuration);
         var row = [
           fmtTime(t.start),
+          startAddressForRow(r, addrMap),
           fmtActivityDistance(t.distance),
           addressForPoint(t.stopPoint, addrMap),
           fmtTime(t.stop),
@@ -1692,6 +1870,7 @@ function exportActivityExcel() {
       var dayStop   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.stopDuration) || 0); }, 0);
       var totalRowData = [
         block.date + " Total",
+        "",
         fmtActivityDistance(dayDistKm) + " in " + fmtDurWhole(dayDrive),
         "",
         block.rows.length + " stops",
@@ -2291,7 +2470,7 @@ function loadCarbonWidget(widgetId, widgetDef, chart) {
       var totalFuel = fuelTrips.reduce(function (s, t) { return s + (t.fuelUsed || 0); }, 0);
       var totalDist = fuelTrips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
       setWidgetStat(widgetId, 0, Math.round(totalCo2) + " kg");
-      setWidgetStat(widgetId, 1, calcMpg(totalDist, totalFuel) + " mpg");
+      setWidgetStat(widgetId, 1, fmtEconomy(totalDist, totalFuel) + " " + economyUnit());
       setWidgetStat(widgetId, 2, "—");
     }, function () { setWidgetStat(widgetId, 0, "Error"); });
   });
@@ -2300,7 +2479,7 @@ function loadCarbonWidget(widgetId, widgetDef, chart) {
 // Speeding widget — per-day (or per-hour) incident count, stacked per vehicle, click to drill
 function loadSpeedingWidget(widgetId, widgetDef, chart) {
   var params    = widgetDef.params || {};
-  var threshKmh = (params.thresholdMph || 80) / 0.621371;
+  var threshKmh = (params.thresholdMph || 80) / MI_PER_KM;
   var toDate = new Date(), fromDate = new Date();
   fromDate.setDate(toDate.getDate() - 30);
   var gran    = bucketGranularity(fromDate, toDate);
@@ -2393,9 +2572,9 @@ function loadMaintenanceSpendWidget(widgetId, chart) {
   }, function () { setWidgetStat(widgetId, 0, "N/A"); });
 }
 
-// Fuel economy widget — per-vehicle daily MPG as separate lines (NOT stacked:
-// MPG is a ratio/average, so summing across vehicles is meaningless). Click a
-// vehicle's point to drill into that vehicle.
+// Fuel economy widget — per-vehicle daily economy as separate lines (NOT stacked:
+// economy is a ratio/average, so summing across vehicles is meaningless). The unit
+// comes from the user's fuelEconomyUnit. Click a vehicle's point to drill in.
 function loadFuelEconomyWidget(widgetId, widgetDef, chart) {
   var toDate = new Date(), fromDate = new Date();
   fromDate.setDate(toDate.getDate() - 30);
@@ -2409,7 +2588,7 @@ function loadFuelEconomyWidget(widgetId, widgetDef, chart) {
   ensureDeviceMap(function () {
     apiCall("Get", { typeName: "Trip", search: { fromDate: fromDate.toISOString(), toDate: toDate.toISOString() } }, function (trips) {
       var fuelTrips = trips.filter(function (t) { return (t.fuelUsed || 0) > 0; });
-      // Per vehicle per bucket accumulate fuel + distance, then derive MPG
+      // Per vehicle per bucket accumulate fuel + distance, then derive economy
       var byVehicle = {};
       fuelTrips.forEach(function (t) {
         var vid = t.device && t.device.id; if (!vid) return;
@@ -2426,7 +2605,8 @@ function loadFuelEconomyWidget(widgetId, widgetDef, chart) {
           label: byVehicle[vid].name, vehicleId: vid,
           data: buckets.map(function (b) {
             var a = byVehicle[vid].acc[b.key];
-            return a && a.fuel > 0 ? parseFloat(calcMpg(a.dist, a.fuel)) : null;
+            var e = a && a.fuel > 0 ? economyNum(a.dist, a.fuel) : null;
+            return e == null ? null : parseFloat(e.toFixed(1));
           }),
           borderColor: clr, backgroundColor: hexToRgba(clr, 0.08),
           borderWidth: 2, tension: 0.4, fill: false, spanGaps: true,
@@ -2439,12 +2619,15 @@ function loadFuelEconomyWidget(widgetId, widgetDef, chart) {
 
       var allFuel = fuelTrips.reduce(function (s, t) { return s + (t.fuelUsed || 0); }, 0);
       var allDist = fuelTrips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
-      var allMpg  = chart.data.datasets.reduce(function (arr, ds) {
+      var allEcon = chart.data.datasets.reduce(function (arr, ds) {
         ds.data.forEach(function (v) { if (v != null) arr.push(v); }); return arr;
       }, []);
-      setWidgetStat(widgetId, 0, calcMpg(allDist, allFuel) + " mpg");
-      setWidgetStat(widgetId, 1, allMpg.length ? Math.max.apply(null, allMpg).toFixed(1) + " mpg" : "—");
-      setWidgetStat(widgetId, 2, allMpg.length ? Math.min.apply(null, allMpg).toFixed(1) + " mpg" : "—");
+      // Best/worst, not max/min: in L/100km and gal/100km the smaller number wins.
+      var bestE  = bestEconomy(allEcon);
+      var worstE = worstEconomy(allEcon);
+      setWidgetStat(widgetId, 0, fmtEconomy(allDist, allFuel) + " " + economyUnit());
+      setWidgetStat(widgetId, 1, bestE  == null ? "—" : bestE.toFixed(1)  + " " + economyUnit());
+      setWidgetStat(widgetId, 2, worstE == null ? "—" : worstE.toFixed(1) + " " + economyUnit());
     }, function () { setWidgetStat(widgetId, 0, "N/A"); });
   });
 }
@@ -2561,14 +2744,14 @@ function buildDrilldownFilters(type, widgetDef) {
     }, function () { fetchDrilldownData(widgetDef, fromDate, toDate); });
 
   } else if (type === "speeding") {
-    var thresh = (widgetDef.params && widgetDef.params.thresholdMph) || 80;
+    var thresh = threshToDisplay((widgetDef.params && widgetDef.params.thresholdMph) || 80);
     fields.innerHTML =
       filterFieldHtml("dd-from",    "From",    "date") +
       filterFieldHtml("dd-to",      "To",      "date") +
       filterFieldHtml("dd-vehicle", "Vehicle", "select") +
       filterFieldHtml("dd-driver",  "Driver",  "select") +
       "<div class='filter-group'><label class='filter-label'>Threshold</label>" +
-      "<input type='number' id='dd-speed-thresh' class='input-date' style='width:70px' value='" + thresh + "' min='1' max='200' /> mph</div>";
+      "<input type='number' id='dd-speed-thresh' class='input-date' style='width:70px' value='" + thresh + "' min='1' max='200' /> " + speedUnit() + "</div>";
     document.getElementById("dd-from").value = fmtDateInput(fromDate);
     document.getElementById("dd-to").value   = fmtDateInput(toDate);
     var p2 = 2, d2 = [], u2 = [];
@@ -2655,9 +2838,11 @@ function fetchDrilldownData(widgetDef, fromDate, toDate) {
     }, function (err) { drilldownError(err); });
 
   } else if (type === "speeding") {
+    // The input carries the user's own unit; thresholdMph stays the stored form.
     var thEl  = document.getElementById("dd-speed-thresh");
-    var thMph = thEl ? (parseFloat(thEl.value) || 80) : ((widgetDef.params && widgetDef.params.thresholdMph) || 80);
-    var thKmh = thMph / 0.621371;
+    var thMph = thEl ? threshFromDisplay(parseFloat(thEl.value) || threshToDisplay(80))
+                     : ((widgetDef.params && widgetDef.params.thresholdMph) || 80);
+    var thKmh = thMph / MI_PER_KM;
     apiCall("Get", { typeName: "Trip", search: { fromDate: fromDate.toISOString(), toDate: toDate.toISOString() } }, function (trips) {
       var speeding = trips.filter(function (t) { return (t.maximumSpeed || 0) > thKmh; });
       state.drilldown.meta.thresholdMph = thMph;
@@ -2730,11 +2915,11 @@ function renderDrilldownTable(rawData) {
     state.drilldown.filtered = filtered;
     var totalCo2 = 0, totalFuel2 = 0, totalDist2 = 0;
     filtered.forEach(function (t) { totalCo2 += (t.fuelUsed || 0) * 2.4; totalFuel2 += (t.fuelUsed || 0); totalDist2 += (t.distance || 0); });
-    summaryItems = [ddSummaryItem(Math.round(totalCo2) + " kg", "Total CO\u2082"), ddSummaryItem(calcMpg(totalDist2, totalFuel2), "Fleet MPG"), ddSummaryItem((totalDist2 * 0.621371).toFixed(0) + " mi", "Total Distance")];
-    headers = ["Vehicle", "Date", "Distance", "Fuel Used", "MPG", "CO\u2082"];
+    summaryItems = [ddSummaryItem(Math.round(totalCo2) + " kg", "Total CO\u2082"), ddSummaryItem(fmtEconomy(totalDist2, totalFuel2), "Fleet " + economyUnit()), ddSummaryItem(distVal(totalDist2).toFixed(0) + " " + distUnit(), "Total Distance")];
+    headers = ["Vehicle", "Date", "Distance", "Fuel Used", economyUnit(), "CO\u2082"];
     rows = filtered.slice().sort(function (a, b) { return new Date(b.start) - new Date(a.start); }).map(function (t) {
       var vName = state.deviceMap[t.device && t.device.id] || "Unknown";
-      return "<tr><td class='td-vehicle'>" + esc(vName) + "</td><td>" + fmtDateReadable(t.start) + "</td><td>" + ((t.distance || 0) * 0.621371).toFixed(1) + " mi</td><td>" + (t.fuelUsed || 0).toFixed(1) + " L</td><td>" + calcMpg(t.distance || 0, t.fuelUsed || 0) + "</td><td>" + Math.round((t.fuelUsed || 0) * 2.4) + " kg</td></tr>";
+      return "<tr><td class='td-vehicle'>" + esc(vName) + "</td><td>" + fmtDateReadable(t.start) + "</td><td>" + fmtDist(t.distance, 1) + "</td><td>" + (t.fuelUsed || 0).toFixed(1) + " " + volUnit() + "</td><td>" + fmtEconomy(t.distance || 0, t.fuelUsed || 0) + "</td><td>" + Math.round((t.fuelUsed || 0) * 2.4) + " kg</td></tr>";
     });
 
   } else if (type === "speeding") {
@@ -2746,18 +2931,18 @@ function renderDrilldownTable(rawData) {
     state.drilldown.filtered = filtered;
     var vehInvolved = {}, maxSpd = 0;
     filtered.forEach(function (t) { if (t.device) vehInvolved[t.device.id] = 1; if ((t.maximumSpeed || 0) > maxSpd) maxSpd = t.maximumSpeed; });
-    summaryItems = [ddSummaryItem(filtered.length, "Total Incidents"), ddSummaryItem(Object.keys(vehInvolved).length, "Vehicles Involved"), ddSummaryItem(toMph(maxSpd).toFixed(0) + " mph", "Highest Speed")];
-    headers = ["Vehicle", "Driver", "Date", "Start Time", "Speed (&gt;" + usedThresh + "mph)", "Distance"];
+    summaryItems = [ddSummaryItem(filtered.length, "Total Incidents"), ddSummaryItem(Object.keys(vehInvolved).length, "Vehicles Involved"), ddSummaryItem(fmtSpeed(maxSpd), "Highest Speed")];
+    headers = ["Vehicle", "Driver", "Date", "Start Time", "Speed (&gt;" + Math.round(threshToDisplay(usedThresh)) + speedUnit() + ")", "Distance"];
     rows = filtered.slice().sort(function (a, b) { return (b.maximumSpeed || 0) - (a.maximumSpeed || 0); }).map(function (t) {
       var vName = state.deviceMap[t.device && t.device.id] || "Unknown";
-      return "<tr><td class='td-vehicle'>" + esc(vName) + "</td><td class='td-driver'>" + esc(t.driverName || "Unassigned") + "</td><td>" + fmtDateReadable(t.start) + "</td><td>" + fmtTime(t.start) + "</td><td><span class='speed-badge'>" + toMph(t.maximumSpeed || 0).toFixed(0) + " mph</span></td><td>" + ((t.distance || 0) * 0.621371).toFixed(1) + " mi</td></tr>";
+      return "<tr><td class='td-vehicle'>" + esc(vName) + "</td><td class='td-driver'>" + esc(t.driverName || "Unassigned") + "</td><td>" + fmtDateReadable(t.start) + "</td><td>" + fmtTime(t.start) + "</td><td><span class='speed-badge'>" + fmtSpeed(t.maximumSpeed || 0) + "</span></td><td>" + fmtDist(t.distance, 1) + "</td></tr>";
     });
 
   } else if (type === "maintenance-upcoming") {
     var processed = rawData.map(function (r) {
       var dueDate = r.nextServiceDate ? new Date(r.nextServiceDate) : null;
       var days    = dueDate ? Math.round((dueDate - today) / 86400000) : null;
-      return { vehicle: state.deviceMap[r.device && r.device.id] || "Unknown", what: r.comment || r.description || "Maintenance", dueDate: dueDate, dueDateStr: dueDate ? fmtDateReadable(dueDate.toISOString()) : "—", odometer: r.nextOdometerReading ? (r.nextOdometerReading / 1000).toFixed(0) + " km" : "—", days: days, deviceId: r.device && r.device.id };
+      return { vehicle: state.deviceMap[r.device && r.device.id] || "Unknown", what: r.comment || r.description || "Maintenance", dueDate: dueDate, dueDateStr: dueDate ? fmtDateReadable(dueDate.toISOString()) : "—", odometer: r.nextOdometerReading ? fmtDist(r.nextOdometerReading / 1000, 0) : "—", days: days, deviceId: r.device && r.device.id };
     }).filter(function (r) { return r.dueDate; });
     if (vidFilter) processed = processed.filter(function (r) { return r.deviceId === vidFilter; });
     if (urgFilter === "overdue")  processed = processed.filter(function (r) { return r.days < 0; });
@@ -2795,12 +2980,11 @@ function renderDrilldownTable(rawData) {
     state.drilldown.filtered = filtered;
     var tFuel = filtered.reduce(function (s, t) { return s + (t.fuelUsed || 0); }, 0);
     var tDist = filtered.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
-    var mpgVals = filtered.map(function (t) { return parseFloat(calcMpg(t.distance, t.fuelUsed)) || 0; }).filter(function (v) { return v > 0; });
-    summaryItems = [ddSummaryItem(calcMpg(tDist, tFuel), "Fleet MPG"), ddSummaryItem(tFuel.toFixed(1) + " L", "Total Fuel"), ddSummaryItem((tDist * 0.621371).toFixed(0) + " mi", "Total Distance")];
-    headers = ["Vehicle", "Date", "Start Time", "Distance", "Fuel Used", "MPG"];
+    summaryItems = [ddSummaryItem(fmtEconomy(tDist, tFuel), "Fleet " + economyUnit()), ddSummaryItem(tFuel.toFixed(1) + " " + volUnit(), "Total Fuel"), ddSummaryItem(distVal(tDist).toFixed(0) + " " + distUnit(), "Total Distance")];
+    headers = ["Vehicle", "Date", "Start Time", "Distance", "Fuel Used", economyUnit()];
     rows = filtered.slice().sort(function (a, b) { return new Date(b.start) - new Date(a.start); }).map(function (t) {
       var vName = state.deviceMap[t.device && t.device.id] || "Unknown";
-      return "<tr><td class='td-vehicle'>" + esc(vName) + "</td><td>" + fmtDateReadable(t.start) + "</td><td>" + fmtTime(t.start) + "</td><td>" + ((t.distance || 0) * 0.621371).toFixed(1) + " mi</td><td>" + (t.fuelUsed || 0).toFixed(1) + " L</td><td><strong>" + calcMpg(t.distance, t.fuelUsed) + "</strong></td></tr>";
+      return "<tr><td class='td-vehicle'>" + esc(vName) + "</td><td>" + fmtDateReadable(t.start) + "</td><td>" + fmtTime(t.start) + "</td><td>" + fmtDist(t.distance, 1) + "</td><td>" + (t.fuelUsed || 0).toFixed(1) + " " + volUnit() + "</td><td><strong>" + fmtEconomy(t.distance, t.fuelUsed) + "</strong></td></tr>";
     });
   } else {
     return;
@@ -2888,15 +3072,15 @@ function exportDrilldownExcel() {
     var co2Tot = data.reduce(function (s, t) { return s + (t.fuelUsed||0)*2.4; }, 0);
     var fTot   = data.reduce(function (s, t) { return s + (t.fuelUsed||0); }, 0);
     var dTot   = data.reduce(function (s, t) { return s + (t.distance||0); }, 0);
-    summaryRows.push(["Total CO2 (kg)", Math.round(co2Tot)], ["Fleet MPG", calcMpg(dTot, fTot)], ["Total Distance (mi)", (dTot*0.621371).toFixed(1)]);
-    detailRows = [["Vehicle","Date","Distance (mi)","Fuel (L)","MPG","CO2 (kg)"]];
-    data.forEach(function (t) { detailRows.push([state.deviceMap[t.device && t.device.id] || "Unknown", fmtDateReadable(t.start), ((t.distance||0)*0.621371).toFixed(1), (t.fuelUsed||0).toFixed(1), calcMpg(t.distance, t.fuelUsed), Math.round((t.fuelUsed||0)*2.4)]); });
+    summaryRows.push(["Total CO2 (kg)", Math.round(co2Tot)], ["Fleet Economy (" + economyUnit() + ")", fmtEconomy(dTot, fTot)], ["Total Distance (" + distUnit() + ")", distVal(dTot).toFixed(1)]);
+    detailRows = [["Vehicle","Date","Distance (" + distUnit() + ")","Fuel (" + volUnit() + ")",economyUnit(),"CO2 (kg)"]];
+    data.forEach(function (t) { detailRows.push([state.deviceMap[t.device && t.device.id] || "Unknown", fmtDateReadable(t.start), distVal(t.distance).toFixed(1), (t.fuelUsed||0).toFixed(1), fmtEconomy(t.distance, t.fuelUsed), Math.round((t.fuelUsed||0)*2.4)]); });
 
   } else if (type === "speeding") {
     var maxS = data.reduce(function (m, t) { return (t.maximumSpeed||0) > m ? t.maximumSpeed : m; }, 0);
-    summaryRows.push(["Total Incidents", data.length], ["Highest Speed (mph)", toMph(maxS).toFixed(0)]);
-    detailRows = [["Vehicle","Driver","Date","Start Time","Max Speed (mph)","Distance (mi)"]];
-    data.forEach(function (t) { detailRows.push([state.deviceMap[t.device && t.device.id] || "Unknown", t.driverName || "Unassigned", fmtDateReadable(t.start), fmtTime(t.start), toMph(t.maximumSpeed||0).toFixed(0), ((t.distance||0)*0.621371).toFixed(1)]); });
+    summaryRows.push(["Total Incidents", data.length], ["Highest Speed (" + speedUnit() + ")", speedVal(maxS).toFixed(0)]);
+    detailRows = [["Vehicle","Driver","Date","Start Time","Max Speed (" + speedUnit() + ")","Distance (" + distUnit() + ")"]];
+    data.forEach(function (t) { detailRows.push([state.deviceMap[t.device && t.device.id] || "Unknown", t.driverName || "Unassigned", fmtDateReadable(t.start), fmtTime(t.start), speedVal(t.maximumSpeed||0).toFixed(0), distVal(t.distance).toFixed(1)]); });
 
   } else if (type === "maintenance-upcoming") {
     summaryRows.push(["Total Items", data.length], ["Overdue", data.filter(function (r) { return r.days < 0; }).length]);
@@ -2913,9 +3097,9 @@ function exportDrilldownExcel() {
   } else if (type === "fuel-economy-daily") {
     var fT = data.reduce(function (s, t) { return s + (t.fuelUsed||0); }, 0);
     var dT = data.reduce(function (s, t) { return s + (t.distance||0); }, 0);
-    summaryRows.push(["Fleet MPG", calcMpg(dT, fT)], ["Total Fuel (L)", fT.toFixed(1)], ["Total Distance (mi)", (dT*0.621371).toFixed(1)]);
-    detailRows = [["Vehicle","Date","Start Time","Distance (mi)","Fuel (L)","MPG"]];
-    data.forEach(function (t) { detailRows.push([state.deviceMap[t.device && t.device.id] || "Unknown", fmtDateReadable(t.start), fmtTime(t.start), ((t.distance||0)*0.621371).toFixed(1), (t.fuelUsed||0).toFixed(1), calcMpg(t.distance, t.fuelUsed)]); });
+    summaryRows.push(["Fleet Economy (" + economyUnit() + ")", fmtEconomy(dT, fT)], ["Total Fuel (" + volUnit() + ")", fT.toFixed(1)], ["Total Distance (" + distUnit() + ")", distVal(dT).toFixed(1)]);
+    detailRows = [["Vehicle","Date","Start Time","Distance (" + distUnit() + ")","Fuel (" + volUnit() + ")",economyUnit()]];
+    data.forEach(function (t) { detailRows.push([state.deviceMap[t.device && t.device.id] || "Unknown", fmtDateReadable(t.start), fmtTime(t.start), distVal(t.distance).toFixed(1), (t.fuelUsed||0).toFixed(1), fmtEconomy(t.distance, t.fuelUsed)]); });
   } else { return; }
 
   var wb = XLSX.utils.book_new();
@@ -2978,11 +3162,11 @@ function exportDrilldownPdf() {
     var co2B = data.reduce(function(s,t){return s+(t.fuelUsed||0)*2.4;},0);
     var fB   = data.reduce(function(s,t){return s+(t.fuelUsed||0);},0);
     var dB   = data.reduce(function(s,t){return s+(t.distance||0);},0);
-    boxes = [{ label:"Total CO2",value:Math.round(co2B)+" kg" },{ label:"Fleet MPG",value:calcMpg(dB,fB) },{ label:"Distance",value:(dB*0.621371).toFixed(0)+" mi" }];
+    boxes = [{ label:"Total CO2",value:Math.round(co2B)+" kg" },{ label:"Fleet "+economyUnit(),value:fmtEconomy(dB,fB) },{ label:"Distance",value:fmtDist(dB,0) }];
   } else if (type === "speeding") {
     var mS = data.reduce(function(m,t){return(t.maximumSpeed||0)>m?t.maximumSpeed:m;},0);
     var vB = {}; data.forEach(function(t){if(t.device)vB[t.device.id]=1;});
-    boxes = [{ label:"Total Incidents",value:String(data.length) },{ label:"Vehicles",value:String(Object.keys(vB).length) },{ label:"Highest Speed",value:toMph(mS).toFixed(0)+" mph" }];
+    boxes = [{ label:"Total Incidents",value:String(data.length) },{ label:"Vehicles",value:String(Object.keys(vB).length) },{ label:"Highest Speed",value:fmtSpeed(mS) }];
   } else if (type === "maintenance-upcoming") {
     boxes = [{ label:"Overdue",value:String(data.filter(function(r){return r.days<0;}).length) },{ label:"Due 7 Days",value:String(data.filter(function(r){return r.days>=0&&r.days<=7;}).length) },{ label:"Due 30 Days",value:String(data.filter(function(r){return r.days>=0&&r.days<=30;}).length) }];
   } else if (type === "maintenance-spend") {
@@ -2990,7 +3174,7 @@ function exportDrilldownPdf() {
     boxes = [{ label:"Total Events",value:String(data.length) },{ label:"Total Spend",value:data.some(function(r){return r.cost!=null;})? "\u00a3"+cT.toFixed(2):"Not logged" },{ label:"Vehicles",value:String([...new Set(data.map(function(r){return r.vehicle;}))].length) }];
   } else {
     var fP=data.reduce(function(s,t){return s+(t.fuelUsed||0);},0), dP=data.reduce(function(s,t){return s+(t.distance||0);},0);
-    boxes = [{ label:"Fleet MPG",value:calcMpg(dP,fP) },{ label:"Total Fuel",value:fP.toFixed(1)+" L" },{ label:"Distance",value:(dP*0.621371).toFixed(0)+" mi" }];
+    boxes = [{ label:"Fleet "+economyUnit(),value:fmtEconomy(dP,fP) },{ label:"Total Fuel",value:fP.toFixed(1)+" "+volUnit() },{ label:"Distance",value:fmtDist(dP,0) }];
   }
   var boxW = (pageW - margin*2 - 8) / 3;
   boxes.forEach(function (b, i) {
@@ -3009,11 +3193,11 @@ function exportDrilldownPdf() {
     tableHead = [["Vehicle","Driver","Date","Time","Duration"]];
     tableBody = data.map(function(e){return[state.deviceMap[e.device&&e.device.id]||"Unknown",e.driver?"Unknown":"No driver",fmtDateReadable(e.activeFrom),fmtTime(e.activeFrom),fmtMins(durationMins(e.activeFrom,e.activeTo))];});
   } else if (type === "carbon-monthly") {
-    tableHead = [["Vehicle","Date","Dist (mi)","Fuel (L)","MPG","CO2 (kg)"]];
-    tableBody = data.map(function(t){return[state.deviceMap[t.device&&t.device.id]||"Unknown",fmtDateReadable(t.start),((t.distance||0)*0.621371).toFixed(1),(t.fuelUsed||0).toFixed(1),calcMpg(t.distance,t.fuelUsed),Math.round((t.fuelUsed||0)*2.4)];});
+    tableHead = [["Vehicle","Date","Dist ("+distUnit()+")","Fuel ("+volUnit()+")",economyUnit(),"CO2 (kg)"]];
+    tableBody = data.map(function(t){return[state.deviceMap[t.device&&t.device.id]||"Unknown",fmtDateReadable(t.start),distVal(t.distance).toFixed(1),(t.fuelUsed||0).toFixed(1),fmtEconomy(t.distance,t.fuelUsed),Math.round((t.fuelUsed||0)*2.4)];});
   } else if (type === "speeding") {
     tableHead = [["Vehicle","Driver","Date","Time","Max Speed","Distance"]];
-    tableBody = data.map(function(t){return[state.deviceMap[t.device&&t.device.id]||"Unknown",t.driverName||"Unassigned",fmtDateReadable(t.start),fmtTime(t.start),toMph(t.maximumSpeed||0).toFixed(0)+" mph",((t.distance||0)*0.621371).toFixed(1)+" mi"];});
+    tableBody = data.map(function(t){return[state.deviceMap[t.device&&t.device.id]||"Unknown",t.driverName||"Unassigned",fmtDateReadable(t.start),fmtTime(t.start),fmtSpeed(t.maximumSpeed||0),fmtDist(t.distance,1)];});
   } else if (type === "maintenance-upcoming") {
     tableHead = [["Vehicle","What Is Due","Date Due","Odometer","Days Until"]];
     tableBody = data.map(function(r){return[r.vehicle,r.what,r.dueDateStr,r.odometer,r.days!=null?String(r.days):""];});
@@ -3021,8 +3205,8 @@ function exportDrilldownPdf() {
     tableHead = [["Vehicle","Description","Date","Cost","Status"]];
     tableBody = data.map(function(r){return[r.vehicle,r.what,r.dateStr,r.cost!=null?"\u00a3"+r.cost.toFixed(2):"Not logged",r.status||""];});
   } else {
-    tableHead = [["Vehicle","Date","Time","Distance","Fuel","MPG"]];
-    tableBody = data.map(function(t){return[state.deviceMap[t.device&&t.device.id]||"Unknown",fmtDateReadable(t.start),fmtTime(t.start),((t.distance||0)*0.621371).toFixed(1)+" mi",(t.fuelUsed||0).toFixed(1)+" L",calcMpg(t.distance,t.fuelUsed)];});
+    tableHead = [["Vehicle","Date","Time","Distance","Fuel",economyUnit()]];
+    tableBody = data.map(function(t){return[state.deviceMap[t.device&&t.device.id]||"Unknown",fmtDateReadable(t.start),fmtTime(t.start),fmtDist(t.distance,1),(t.fuelUsed||0).toFixed(1)+" "+volUnit(),fmtEconomy(t.distance,t.fuelUsed)];});
   }
 
   doc.autoTable({ startY: yPos, head: tableHead, body: tableBody, margin: { left: margin, right: margin }, styles: { fontSize: 9, cellPadding: 3, textColor: [45,55,72] }, headStyles: { fillColor: [0,120,212], textColor: 255, fontStyle: "bold", fontSize: 9 }, alternateRowStyles: { fillColor: [248,249,251] } });
@@ -3099,7 +3283,7 @@ function exportLegacyTripHistoryPdf() {
   ], yPos);
   yPos += 20;
   drawKpiRow([
-    { label: "Total Distance Travelled (miles)", value: milesFromDistance(totalDistM).toFixed(0) },
+    { label: "Total Distance Travelled (" + distUnit() + ")", value: distVal(totalDistM).toFixed(0) },
     { label: "Average Stop Duration",            value: fmtDurWhole(avgStop) },
     { label: "Number of Stops",                  value: String(numStops) }
   ], yPos);
@@ -3143,7 +3327,7 @@ function exportLegacyTripHistoryPdf() {
         var stopMins  = legacyStopMins(t);
         body.push([
           fmtTime(t.start),
-          milesFromDistance(t.distance).toFixed(2) + " mi\n" + fmtDurPrecise(driveMins),
+          fmtDist(t.distance, 2) + "\n" + fmtDurPrecise(driveMins),
           addressForPoint(t.stopPoint, addrMap),
           fmtTime(t.stop),
           fmtDurPrecise(idleMins),
@@ -3160,7 +3344,7 @@ function exportLegacyTripHistoryPdf() {
       var totalStyles = { fontStyle: "bold", fillColor: [245, 245, 245] };
       body.push([
         { content: block.date + " Total", styles: totalStyles },
-        { content: milesFromDistance(dayDistM).toFixed(2) + " mi in " + fmtDurWhole(dayDrive), styles: totalStyles },
+        { content: fmtDist(dayDistM, 2) + " in " + fmtDurWhole(dayDrive), styles: totalStyles },
         { content: "", styles: totalStyles },
         { content: "", styles: totalStyles },
         { content: fmtDurWhole(dayIdle), styles: totalStyles },
@@ -3438,7 +3622,8 @@ function openIncident(ev) {
   apiCall("Get", { typeName: "LogRecord", search: { deviceSearch: { id: deviceId }, fromDate: from.toISOString(), toDate: to.toISOString() } }, function (recs) {
     var pts = (recs || [])
       .filter(function (r) { return r.latitude != null && r.longitude != null && !(r.latitude === 0 && r.longitude === 0); })
-      .map(function (r) { return { t: new Date(r.dateTime).getTime(), lat: r.latitude, lng: r.longitude, mph: toMph(r.speed || 0) }; })
+      // spd is already in the user's unit — LogRecord.speed is km/h.
+      .map(function (r) { return { t: new Date(r.dateTime).getTime(), lat: r.latitude, lng: r.longitude, spd: speedVal(r.speed || 0) }; })
       .sort(function (a, b) { return a.t - b.t; });
     if (pts.length < 2) {
       document.getElementById("inc-readout").textContent = "Not enough GPS data for this event to build a replay.";
@@ -3480,11 +3665,11 @@ function renderIncident(pts, evFrom, evTo) {
   setTimeout(function () { state.incMap.invalidateSize(); }, 60);
 
   var labels = pts.map(function (p) { return fmtTime(new Date(p.t).toISOString()); });
-  var data   = pts.map(function (p) { return parseFloat(p.mph.toFixed(1)); });
+  var data   = pts.map(function (p) { return parseFloat(p.spd.toFixed(1)); });
   state.incChart = new Chart(document.getElementById("inc-chart"), {
     type: "line",
     data: { labels: labels, datasets: [{
-      label: "Speed (mph)", data: data,
+      label: "Speed (" + speedUnit() + ")", data: data,
       borderColor: "#94A3B8", borderWidth: 2, fill: false, tension: 0.3,
       pointRadius: 0, pointHoverRadius: 5, pointBackgroundColor: "#DC2626",
       segment: { borderColor: function (c) { return (isEvent[c.p0DataIndex] && isEvent[c.p1DataIndex]) ? "#DC2626" : "#94A3B8"; } }
@@ -3494,11 +3679,11 @@ function renderIncident(pts, evFrom, evTo) {
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { display: false },
-        tooltip: { enabled: true, callbacks: { label: function (c) { return c.parsed.y + " mph"; } } }
+        tooltip: { enabled: true, callbacks: { label: function (c) { return c.parsed.y + " " + speedUnit(); } } }
       },
       scales: {
         x: { ticks: { color: "#9CA3AF", font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { color: "rgba(0,0,0,.04)" } },
-        y: { beginAtZero: true, title: { display: true, text: "mph", color: "#9CA3AF" }, ticks: { color: "#9CA3AF", font: { size: 10 } }, grid: { color: "rgba(0,0,0,.04)" } }
+        y: { beginAtZero: true, title: { display: true, text: speedUnit(), color: "#9CA3AF" }, ticks: { color: "#9CA3AF", font: { size: 10 } }, grid: { color: "rgba(0,0,0,.04)" } }
       },
       onHover: function (evt, els) {
         if (!els || !els.length) return;
@@ -3506,7 +3691,7 @@ function renderIncident(pts, evFrom, evTo) {
         var p = pts[i]; if (!p || !state.incMarker) return;
         state.incMarker.setLatLng([p.lat, p.lng]);
         document.getElementById("inc-readout").textContent =
-          fmtTime(new Date(p.t).toISOString()) + " \u00b7 " + p.mph.toFixed(0) + " mph" + (isEvent[i] ? " \u00b7 INFRACTION" : "");
+          fmtTime(new Date(p.t).toISOString()) + " \u00b7 " + p.spd.toFixed(0) + " " + speedUnit() + (isEvent[i] ? " \u00b7 INFRACTION" : "");
       }
     }
   });
@@ -3632,16 +3817,6 @@ function downloadCsvBlob(rows, filename) {
   var a    = document.createElement("a"); a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
-// distM is Trip.Distance, which is in KILOMETRES (see milesFromDistance note).
-// Returns UK imperial mpg.
-function calcMpg(distM, fuelL) {
-  if (!fuelL || fuelL <= 0 || !distM) return "—";
-  var miles   = distM * 0.621371;
-  var gallons = fuelL / 4.54609;  // UK imperial gallons
-  return (miles / gallons).toFixed(1);
-}
-function toMph(kmh)         { return kmh * 0.621371; }
-function mphStr(kmh)        { return kmh ? toMph(kmh).toFixed(0) + " mph" : "—"; }
 function hexToRgba(hex, a)  { var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16); return "rgba("+r+","+g+","+b+","+a+")"; }
 function fmtDateInput(d)    { return d.toISOString().slice(0, 10); }
 function fmtDateShort(iso)  { return iso ? new Date(iso).toISOString().slice(0, 10) : ""; }
@@ -3698,8 +3873,8 @@ function openParamEditor(widgetId) {
       "<div class='param-row'>" +
         "<label class='param-label'>Speed threshold</label>" +
         "<div class='param-input-wrap'>" +
-          "<input type='number' id='pe-threshold' class='input-date' style='width:80px' min='1' max='200' value='" + (params.thresholdMph || 80) + "' />" +
-          "<span class='param-unit'>mph</span>" +
+          "<input type='number' id='pe-threshold' class='input-date' style='width:80px' min='1' max='200' value='" + threshToDisplay(params.thresholdMph || 80) + "' />" +
+          "<span class='param-unit'>" + speedUnit() + "</span>" +
         "</div>" +
         "<p class='param-hint'>Trips where maximum speed exceeds this value will be flagged.</p>" +
       "</div>";
@@ -3721,9 +3896,10 @@ function saveParamEditor() {
   if (!wState) { closeParamEditor(); return; }
   var type = wState.widgetDef.type;
   if (type === "speeding") {
-    var thEl = document.getElementById("pe-threshold");
-    var val  = thEl ? (parseFloat(thEl.value) || 80) : 80;
-    wState.widgetDef.params = { thresholdMph: val };
+    var thEl   = document.getElementById("pe-threshold");
+    // The box holds the user's own unit; thresholdMph is the stored form.
+    var shown  = thEl ? (parseFloat(thEl.value) || threshToDisplay(80)) : threshToDisplay(80);
+    wState.widgetDef.params = { thresholdMph: threshFromDisplay(shown) };
     // Update title dot label hint in header (keep user title, don't rename)
   }
   saveDashboard();

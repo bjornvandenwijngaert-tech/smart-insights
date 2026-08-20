@@ -114,9 +114,13 @@ smart-insights/
   nearest free slot along the axis closest to the dragged tile's centre, 8px gap.
 - **v2.4.0** — Dashboard layout persisted in MyGeotab **AddInData** (`addInId:
   "SmartInsightsDashboard"`) instead of localStorage, so the layout is shared across
-  all users with add-in access and is per-database (no longer bleeds across databases).
-  First load migrates any old localStorage layout then clears it. localStorage remains
-  a fallback for local dev (no `state.api`).
+  all users with add-in access and is per-database. First load migrates any old
+  localStorage layout then clears it. localStorage remains a fallback for local dev
+  (no `state.api`).
+  **This did not fix the cross-database bleed.** The claim above was wrong. AddInData
+  was put in front of localStorage but localStorage was never removed from the code
+  paths that matter, and the migration path actively spreads the bleed. Still broken as
+  of 2026-08-19. See "Open bugs" below before touching persistence.
 - **v2.5.0** — Charts + map. All event widgets now render **stacked-per-vehicle bars**
   (distinct colour per vehicle) with **adaptive granularity** (per-day, or per-hour when
   the range ≤ 24h). Clicking a vehicle segment opens the drill-down pre-filtered to that
@@ -129,6 +133,73 @@ smart-insights/
   scrub marker) synced to a Chart.js **speed line** (event portion red). Hovering/tracing
   the speed graph moves the marker along the route; readout shows time · mph · INFRACTION.
   Window = event ±60s. Needs ≥2 GPS points, else shows a "not enough GPS data" message.
+
+---
+
+## Open bugs
+
+### Dashboard layout bleeds between databases (open, high priority)
+
+**Reported 2026-08-19, confirmed still present.** A dashboard layout built in one
+database shows up in another. v2.4.0 claimed to fix this and did not. Treat the
+changelog entry as unreliable and this section as the current truth.
+
+Not yet reproduced against two live databases. What follows is read from the code in
+`src/app.js:3515-3622`, so the mechanisms are real but which one is firing has not
+been confirmed.
+
+**Why AddInData alone did not fix it.** AddInData genuinely is per-database, so the
+happy path is correct. The problem is that localStorage was left in place underneath
+it, and the localStorage key carries no database identity:
+
+```js
+localStorage.setItem("smartinsights-dashboard", details);
+```
+
+Add-in pages are injected into the MyGeotab page, not iframed, so localStorage is
+scoped to the MyGeotab origin (`my.geotab.com`). Every database on that server shares
+one origin, therefore one key. Anything written there is visible to every database the
+user opens on that server. This is the bleed vector and it is still live.
+
+**Four candidate causes, in the order worth checking.**
+
+1. **Stale `state.dashboardDataId` across a database switch** (`3544`, `3602`).
+   The AddInData record id is cached on `state`. Switching database in the MyGeotab UI
+   is client-side navigation and may not tear down the add-in's JS scope, which is
+   shared across pages by design. If the id survives the switch, `saveDashboard` takes
+   the `Set` branch and writes database B's layout into database A's record. This is
+   the strongest suspect because it needs no localStorage involvement at all and it
+   matches "persistent between databases" exactly.
+
+2. **The migration path plants one database's layout into another** (`3606-3613`).
+   On finding no AddInData record, the code restores whatever is in localStorage and
+   then saves it as *this* database's record. One stale localStorage entry from
+   database A therefore becomes database B's permanent saved layout. The
+   `removeItem` on `3612` fires after the damage, and it is also ordered wrong: it runs
+   synchronously while the `Add` on `3554` is still in flight, and if that `Add` fails
+   the error handler on `3561` writes the key straight back.
+
+3. **Silent localStorage fallbacks on any API failure** (`3561`, `3619`).
+   A failed `Add` or `Get` drops to the shared key with only a `console.warn`. The user
+   sees a layout that looks saved and has in fact been written somewhere every other
+   database can read. Failures are invisible in normal use.
+
+4. **`Get` takes `results[0]` unconditionally** (`3600-3602`).
+   Concurrent first-saves by different users can create more than one record for the
+   same `addInId`. Whichever comes back first wins, silently. Not the reported symptom
+   but it will produce divergent layouts between users in the same database.
+
+**Direction when this gets worked on** (not decided, do not treat as a plan):
+namespace any localStorage key by database and clear the cached record id whenever the
+database changes, rather than adding more fallbacks. The database name is already read
+for the db badge. Bear in mind that removing the fallback entirely means a failed
+AddInData call loses the layout, so the failure needs to become visible to the user
+instead of a `console.warn`.
+
+**Verification this needs, which no previous fix had.** Two real databases, a distinct
+layout saved in each, then switch between them both with and without a full page
+reload, and confirm each keeps its own. The v2.4.0 fix was reasoned about rather than
+tested across databases, which is how a wrong claim reached the changelog.
 
 ---
 
