@@ -100,6 +100,11 @@ smart-insights/
   its own. See `legacy-trip-report/CONTEXT.md`. KEEP THE TWO IN SYNC until they
   are formally split into separate repos.
 
+  The **Activity Report** now has the same treatment under `activity-report/`
+  (own config.json, index.html, src/app.js, styles.css, logo). Same rule: KEEP IT
+  IN SYNC with the Activity Report functions in `src/app.js`. See
+  `activity-report/CONTEXT.md`.
+
   **Scheduled email reports \u2014 investigated, not built (deferred).** A MyGeotab
   add-in is client-side only: it runs solely while a user has the page open, with
   no server, background process, or cron. Scheduled emailing is therefore
