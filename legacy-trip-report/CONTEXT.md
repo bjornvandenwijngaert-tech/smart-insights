@@ -64,7 +64,13 @@ formally split into separate repos. Functions kept in sync include:
 `addressForPoint`, `buildLegacyDayBlocks`, `renderLegacyTripHistoryOutput`,
 `exportLegacyTripHistoryPdf`, `drawPdfHeaderLogo`, `localDayKey`,
 `buildLegacyStopInfo`, `legacyStopMins`, `OVERNIGHT_MIN_HOURS`,
-`resolveHost`, `cardDatePart`, `tripHistoryUrl`, `tripHistoryCell`.
+`resolveHost`, `cardDatePart`, `tripHistoryUrl`, `tripHistoryCell`, `esc`.
+
+**`esc()` must escape single quotes.** Every attribute here is written with
+single-quoted delimiters and the rison Trip History URLs quote their dates with
+apostrophes, so an `esc()` that leaves `'` alone truncates every href at
+`dateRange:(endDate:` and the link opens a bare map. All three copies of this
+code have now hit that bug; do not "simplify" the escaper.
 
 The Trip History deep-link helpers have a **third** copy, in the Activity Report
 add-in at `~/repos/vehicle-activity-log` (`replayUrl`, `resolveHost`,

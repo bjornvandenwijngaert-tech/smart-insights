@@ -3640,7 +3640,8 @@ function loadMapData() {
       }, function (done, total) {
         status.textContent = "Locating events\u2026 " + done + "/" + total;
       });
-    }, function (err) { status.textContent = "Error loading events: " + esc((err && err.message) || String(err)); });
+    // textContent, so no escaping — esc() here would print the entities literally.
+    }, function (err) { status.textContent = "Error loading events: " + ((err && err.message) || String(err)); });
   });
 }
 
@@ -3741,7 +3742,8 @@ function openIncident(ev) {
     document.getElementById("inc-readout").textContent = "Hover the graph to trace the route.";
     renderIncident(pts, evFrom, evTo);
   }, function (err) {
-    document.getElementById("inc-readout").textContent = "Error loading GPS: " + esc((err && err.message) || String(err));
+    // textContent, so no escaping — esc() here would print the entities literally.
+    document.getElementById("inc-readout").textContent = "Error loading GPS: " + ((err && err.message) || String(err));
   });
 }
 
@@ -3932,7 +3934,16 @@ function fmtDateReadable(iso) { if (!iso) return ""; var d = new Date(iso); retu
 function fmtTime(iso)       { return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--"; }
 function fmtMins(m)         { return m < 60 ? Math.round(m) + "m" : Math.floor(m / 60) + "h " + Math.round(m % 60) + "m"; }
 function durationMins(a, b) { return (!a || !b) ? 0 : (new Date(b) - new Date(a)) / 60000; }
-function esc(str)           { return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+// Single quotes MUST be escaped here. Every attribute in this file is written with
+// single-quoted delimiters, and the rison Trip History URLs quote their date values
+// with apostrophes, so leaving ' alone silently truncates every href at the first
+// date — the link then lands on a bare map instead of the trip.
+function esc(str) {
+  return String(str == null ? "" : str)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 function sanitiseFilename(s){ return s.replace(/[^a-z0-9_\-]/gi, "_").toLowerCase(); }
 function showError(msg)     { document.getElementById("loading").innerHTML = "<p style='color:var(--critical);padding:40px'>" + msg + "</p>"; }
 // ─── Inline name edit ─────────────────────────────────────────────────────────

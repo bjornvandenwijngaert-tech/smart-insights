@@ -35,9 +35,18 @@ smart-insights/
 
 ---
 
-## Current version: v2.9.0
+## Current version: v2.9.1
 
 ### Changelog since v2.2.0
+- **v2.9.1** — **`esc()` now escapes single quotes.** Every attribute in
+  `src/app.js` is written with single-quoted delimiters, and the rison Trip
+  History URLs quote their date values with apostrophes, so the first `'` in the
+  URL closed the `href` and truncated it at `dateRange:(endDate:` — the link
+  opened a bare map. This is the same bug the Activity Report add-in hit in its
+  v1.0.0–v1.1.0 and fixed the same way; it is a property of the escaper, not the
+  URL grammar. Two `textContent` assignments that were wrapping error messages in
+  `esc()` had the call removed — `textContent` needs no escaping, and with `'`
+  now escaped they would have printed `&#39;` literally.
 - **v2.9.0** — **Trip History deep links in the Legacy Trip History Report.**
   Every trip row now ends in a `Trip History` link that opens MyGeotab's Trips
   History page scoped to that vehicle, that day, with the replay player open and
