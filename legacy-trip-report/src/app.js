@@ -21,6 +21,8 @@ var state = {
   reportData:     [],
   deviceMap:      {},
   dbName:         "",
+  server:         "",    // MyGeotab host for Trip History links, e.g. "my.geotab.com"
+  hostVia:        "",    // where server/dbName came from, for the diagnostics line
   legacyByDevice: null,  // { deviceId: { name, trips, drivers } }
   legacyAddrMap:  null,  // "lat,lng" -> resolved address string
   legacyStopInfo: null   // Map(trip -> { mins, excluded }) — see buildLegacyStopInfo
@@ -36,8 +38,10 @@ geotab.addin.legacyTripHistory = function () {
         state.api = api;
         if (freshState && freshState.database) {
           state.dbName = freshState.database;
+          state.hostVia = "session";
           document.getElementById("db-name").textContent = freshState.database;
         }
+        resolveHost();
         setupReports();
         document.getElementById("loading").classList.add("hidden");
         document.getElementById("main").classList.remove("hidden");
@@ -288,6 +292,106 @@ function buildLegacyDayBlocks(vTrips, addrMap) {
   return order.map(function (day) { return days[day]; });
 }
 
+// ─── Trip History deep link ────────────────────────────────────────────────
+// Ported from the Activity Report add-in (~/repos/vehicle-activity-log). Keep the
+// two in sync: the URL shape below is not documented anywhere reliable.
+//
+// The format in the SDK guide ("Using MyGeotab URLs") is stale — its examples date
+// from 2015 and Geotab simplified the URLs in 2022. entityType and selectedEntities
+// are no longer read by the Trips History page, so links built from the docs open a
+// blank page. This shape was copied out of the address bar after selecting one
+// vehicle and a custom date range by hand in a live database:
+//
+//   #tripsHistory,
+//   dateRange:(endDate:'…',label:Custom,startDate:'…'),
+//   devices:!(bC),
+//   expandedCardIds:!('bC_UnknownDriverId_Tue+Aug+18'),
+//   isReplayPlayerHidden:!f,
+//   routes:(bC:!((start:'…',stop:'…')))
+//
+// What each part does:
+//   devices               THE vehicle filter. Not entityType/selectedEntities.
+//   routes                device id -> trip segments to draw. Does not select the
+//                         vehicle on its own; devices does that. One segment is
+//                         deliberate: land on this row's trip, not redraw the day.
+//   isReplayPlayerHidden  rison !f is false, so the replay player opens.
+//   dateRange             scopes the trip list. label:Custom needs explicit dates.
+//   expandedCardIds       opens the matching trip card in the side list.
+//                         "<deviceId>_<driverId>_<Ddd+Mmm+D>", spaces as "+".
+//   mapBounds             viewport only; omitted so the map fits the route.
+//
+// Timezone note: the Activity Report builds these from the MyGeotab profile
+// timezone. This report has no profile-timezone plumbing — every time it prints
+// (fmtTime, localDayKey) is browser-local — so the link uses browser-local too and
+// stays consistent with the row it sits on.
+var DOW_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+var MON_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function cardDatePart(iso) {
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return DOW_SHORT[d.getDay()] + "+" + MON_SHORT[d.getMonth()] + "+" + d.getDate();
+}
+
+// Where the MyGeotab host comes from, best source first. Add-in pages are injected
+// into the MyGeotab page rather than iframed, so window.location is normally
+// already the real MyGeotab URL: https://my.geotab.com/<database>/#legacyTripHistory
+function resolveHost() {
+  if (!state.server) {
+    var host = window.location.hostname || "";
+    // Ignore the case where the page really is served from its own host.
+    if (host && !/(^|\.)github\.io$/i.test(host) && host !== "localhost" && host !== "127.0.0.1") {
+      state.server  = host;
+      state.hostVia = "window.location";
+      var seg = window.location.pathname.split("/").filter(Boolean);
+      if (!state.dbName && seg.length) state.dbName = decodeURIComponent(seg[0]);
+    }
+  }
+  return !!(state.server && state.dbName);
+}
+
+// Returns "" when no host resolved, which the renderer turns into a disabled cell
+// rather than a link that quietly lands on an empty Trips History page.
+function tripHistoryUrl(deviceId, trip) {
+  if (!state.server || !state.dbName) return "";
+  var d = new Date(trip.start);
+  if (isNaN(d.getTime())) return "";
+
+  // Midnight to 23:59:59 of that local day, as UTC instants, which is what
+  // MyGeotab itself puts in dateRange.
+  var dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
+  var dayEnd   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
+
+  // Trip.driver is a Driver entity, or the "UnknownDriverId" sentinel when nobody
+  // was assigned. The card id needs whichever.
+  var driverId = (trip.driver && trip.driver.id) ? trip.driver.id : "UnknownDriverId";
+  var cardId   = deviceId + "_" + driverId + "_" + cardDatePart(trip.start);
+
+  // Keys emitted alphabetically, matching how MyGeotab serialises them.
+  var parts = [
+    "dateRange:(endDate:'" + dayEnd.toISOString() + "',label:Custom,startDate:'" + dayStart.toISOString() + "')",
+    "devices:!(" + deviceId + ")"
+  ];
+  if (cardId) parts.push("expandedCardIds:!('" + cardId + "')");
+  parts.push("isReplayPlayerHidden:!f");
+  parts.push("routes:(" + deviceId + ":!((start:'" + new Date(trip.start).toISOString() +
+             "',stop:'" + new Date(trip.stop).toISOString() + "')))");
+
+  return "https://" + state.server + "/" + state.dbName + "/#tripsHistory," + parts.join(",");
+}
+
+// A real href, not "#": the browser status bar then shows where the link goes, and
+// middle-click / copy-link-address both work, which is what makes this diagnosable
+// without a debugger.
+function tripHistoryCell(deviceId, trip) {
+  var url = tripHistoryUrl(deviceId, trip);
+  if (!url) {
+    return "<td><span class='trip-history-link is-disabled' title='No MyGeotab host resolved, so no Trip History link could be built.'>Trip History</span></td>";
+  }
+  return "<td><a href='" + esc(url) + "' target='_blank' rel='noopener' class='trip-history-link'" +
+         " title='" + esc(url) + "'>Trip History</a></td>";
+}
+
 // ─── Run ───────────────────────────────────────────────────────────────────
 function runLegacyTripHistoryReport(from, to, done) {
   var fromDate = new Date(from + "T00:00:00").toISOString();
@@ -365,6 +469,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
           "<td>" + fmtTime(t.stop) + "</td>" +
           "<td>" + fmtDurPrecise(idleMins) + "</td>" +
           "<td>" + stopStr + "</td>" +
+          tripHistoryCell(vid, t) +
         "</tr>";
       }).join("");
 
@@ -376,18 +481,20 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
 
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
-      var startingFromHtml = "<tr><td colspan='6' style='font-weight:600;background:var(--surface-2)'>" + block.date + " \u2014 Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
+      var startingFromHtml = "<tr><td colspan='7' style='font-weight:600;background:var(--surface-2)'>" + block.date + " \u2014 Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
       // "(Ignition On)" marks the day's first drive. We deliberately do NOT show a
       // duration here: the gap to the previous trip is overnight/parked time, not
       // idle, and Trip data has no pre-drive idle figure to show instead.
       var ignitionHtml = prevTrip
-        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='3'>(Ignition On)</td><td>\u2014</td><td></td></tr>"
+        // No Trip History cell here: this synthetic row marks the same trip whose
+        // own row, directly below, already carries the link.
+        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='3'>(Ignition On)</td><td>\u2014</td><td></td><td></td></tr>"
         : "";
 
       return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table'>" +
-        "<thead><tr><th>Start Time</th><th>Distance / Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th></tr></thead>" +
+        "<thead><tr><th>Start Time</th><th>Distance / Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th><th>Trip History</th></tr></thead>" +
         "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml +
-        "<tr style='font-weight:700;background:var(--surface-2)'><td>" + block.date + " Total</td><td>" + milesFromDistance(dayDistM).toFixed(2) + " mi in " + fmtDurWhole(dayDrive) + "</td><td></td><td>" + dayCount.length + " stops</td><td>" + fmtDurWhole(dayIdle) + "</td><td>" + fmtDurWhole(dayStop) + "</td></tr>" +
+        "<tr style='font-weight:700;background:var(--surface-2)'><td>" + block.date + " Total</td><td>" + milesFromDistance(dayDistM).toFixed(2) + " mi in " + fmtDurWhole(dayDrive) + "</td><td></td><td>" + dayCount.length + " stops</td><td>" + fmtDurWhole(dayIdle) + "</td><td>" + fmtDurWhole(dayStop) + "</td><td></td></tr>" +
         "</tbody></table></div>";
     }).join("");
 

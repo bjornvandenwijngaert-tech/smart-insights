@@ -63,7 +63,16 @@ formally split into separate repos. Functions kept in sync include:
 `buildLegacyByDevice`, `resolveStopAddresses`, `formatReverseGeocodeAddress`,
 `addressForPoint`, `buildLegacyDayBlocks`, `renderLegacyTripHistoryOutput`,
 `exportLegacyTripHistoryPdf`, `drawPdfHeaderLogo`, `localDayKey`,
-`buildLegacyStopInfo`, `legacyStopMins`, `OVERNIGHT_MIN_HOURS`.
+`buildLegacyStopInfo`, `legacyStopMins`, `OVERNIGHT_MIN_HOURS`,
+`resolveHost`, `cardDatePart`, `tripHistoryUrl`, `tripHistoryCell`.
+
+The Trip History deep-link helpers have a **third** copy, in the Activity Report
+add-in at `~/repos/vehicle-activity-log` (`replayUrl`, `resolveHost`,
+`cardDatePart`), which is where the URL shape was reverse engineered and is the
+one to check first if links stop working. Two deliberate differences here:
+that repo builds times from the MyGeotab **profile** timezone, this report uses
+browser-local (matching `fmtTime` / `localDayKey`, which it has always used);
+and rows here always have a Trip, so there is no ±15 min padded fallback window.
 
 The parent also has an **Activity Report** that shares `buildLegacyByDevice`,
 `buildLegacyDayBlocks`, `resolveStopAddresses`, `addressForPoint` and

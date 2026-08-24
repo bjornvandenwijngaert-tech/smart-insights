@@ -35,9 +35,24 @@ smart-insights/
 
 ---
 
-## Current version: v2.7.0
+## Current version: v2.9.0
 
 ### Changelog since v2.2.0
+- **v2.9.0** — **Trip History deep links in the Legacy Trip History Report.**
+  Every trip row now ends in a `Trip History` link that opens MyGeotab's Trips
+  History page scoped to that vehicle, that day, with the replay player open and
+  the matching trip card expanded. Ported from the Activity Report add-in
+  (`~/repos/vehicle-activity-log`), which is where the URL shape was reverse
+  engineered — the SDK guide's "Using MyGeotab URLs" examples are stale (2015-era
+  `entityType` / `selectedEntities` are no longer read and produce a blank page).
+  New helpers in `src/app.js`: `resolveHost()`, `cardDatePart()`,
+  `tripHistoryUrl()`, `tripHistoryCell()`; new CSS class `.trip-history-link`.
+  The host comes from `window.location` (add-in pages are injected, not iframed)
+  with the session database as a fallback; when neither resolves the cell renders
+  as disabled text rather than a link that lands on an empty page. Times in the
+  link are browser-local, matching every other time this report prints. Mirrored
+  into the standalone `legacy-trip-report/` add-in (v1.2.0). PDF and CSV exports
+  are unchanged — the link is on-screen only.
 - **v2.7.0** — **Legacy Trip History Report** (Reports tab, `legacy-trip-history`).
   Recreates a classic per-vehicle/per-day trip-log export (start time, distance,
   driving duration, reverse-geocoded stop address, arrival time, idle duration,
