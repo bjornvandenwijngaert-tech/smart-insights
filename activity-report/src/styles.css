@@ -726,6 +726,31 @@ body {
 
 .ar-vehicle-meta { min-width: 0; }
 
+.ar-summary-head {
+  display: grid;
+  grid-template-columns: auto minmax(240px, 430px) minmax(0, 1fr);
+  align-items: end;
+  column-gap: 12px;
+  padding: 0 14px 6px 18px;
+  margin: 0 0 6px;
+}
+
+.ar-summary-head-arrow {
+  width: 5px;
+  height: 1px;
+}
+
+.ar-summary-head-vehicle,
+.ar-summary-head-meta {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #7a8394;
+  text-transform: uppercase;
+  letter-spacing: .35px;
+}
+
+.ar-summary-head-meta { min-width: 0; }
+
 .ar-summary-parts {
   display: inline-flex;
   flex-wrap: wrap;
@@ -748,18 +773,21 @@ body {
 
 .ar-summary-text { white-space: nowrap; }
 
-.ar-summary-parts-vehicle {
+.ar-summary-parts-vehicle,
+.ar-summary-parts-vehicle-head {
   display: grid;
   grid-template-columns: 70px 84px 94px 132px 108px 92px;
   column-gap: 12px;
   row-gap: 3px;
 }
 
-.ar-summary-parts-vehicle .ar-summary-part {
+.ar-summary-parts-vehicle .ar-summary-part,
+.ar-summary-parts-vehicle-head .ar-summary-part {
   display: block;
 }
 
-.ar-summary-parts-vehicle .ar-summary-sep {
+.ar-summary-parts-vehicle .ar-summary-sep,
+.ar-summary-parts-vehicle-head .ar-summary-sep {
   display: none;
 }
 
@@ -774,7 +802,18 @@ body {
     grid-column: 2;
   }
 
-  .ar-summary-parts-vehicle {
+  .ar-summary-head {
+    grid-template-columns: auto minmax(240px, 1fr);
+    row-gap: 5px;
+    align-items: baseline;
+  }
+
+  .ar-summary-head-meta {
+    grid-column: 2;
+  }
+
+  .ar-summary-parts-vehicle,
+  .ar-summary-parts-vehicle-head {
     grid-template-columns: repeat(3, minmax(120px, max-content));
   }
 }

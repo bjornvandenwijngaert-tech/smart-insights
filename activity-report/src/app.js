@@ -575,8 +575,21 @@ function renderActivityReport(byDevice, addrMap) {
   var baseHeaders  = ["Start Time", "Start Location", "Distance / Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
   var allHeaders   = baseHeaders.concat(extraHeaders);
   var colSpan      = allHeaders.length;
+  var summaryHeader = "<div class='ar-summary-head'>"
+    + "<span class='ar-summary-head-arrow' aria-hidden='true'></span>"
+    + "<span class='ar-summary-head-vehicle'>Vehicle</span>"
+    + "<span class='ar-summary-head-meta'>"
+    + summaryMetaHtml([
+      "Days reported",
+      "Stops",
+      "Distance driven",
+      "Engine on Hours",
+      "Actual Driving time",
+      "Idling Time"
+    ], "vehicle-head")
+    + "</span></div>";
 
-  output.innerHTML = vids.map(function (vid) {
+  output.innerHTML = summaryHeader + vids.map(function (vid) {
     var v = byDevice[vid];
     var driverNames = Object.keys(v.drivers).join(", ") || "No driver assigned";
     var dayBlocks   = buildDayBlocks(v.trips);
