@@ -225,6 +225,12 @@ body {
   border-color: transparent;
 }
 
+.input-date:disabled {
+  background: var(--surface-3);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 .report-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* ─── Fleet health score ────────────────────────────────────────────────────── */
@@ -651,6 +657,78 @@ body {
 /* ─── Report output ─────────────────────────────────────────────────────────── */
 .report-output { display: flex; flex-direction: column; gap: 8px; }
 .placeholder, .report-placeholder { color: var(--text-muted); padding: 48px 0; text-align: center; }
+
+/* Summary-first report view for large fleets. */
+.ar-vehicle-fold,
+.ar-day-fold {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.ar-day-fold { border-radius: var(--radius-sm); }
+.ar-day-fold + .ar-day-fold { margin-top: 10px; }
+
+.ar-vehicle-summary,
+.ar-day-summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.ar-vehicle-summary::-webkit-details-marker,
+.ar-day-summary::-webkit-details-marker { display: none; }
+
+.ar-vehicle-summary {
+  padding: 10px 14px;
+  border-left: 4px solid var(--accent);
+}
+
+.ar-day-summary {
+  padding: 8px 11px;
+}
+
+.ar-vehicle-summary::before,
+.ar-day-summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  flex: none;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform .15s;
+}
+
+.ar-vehicle-fold[open] > .ar-vehicle-summary::before,
+.ar-day-fold[open] > .ar-day-summary::before { transform: rotate(90deg); }
+
+.ar-vehicle-main { font-size: 14px; font-weight: 700; color: var(--text); }
+.ar-day-main { font-weight: 700; color: var(--text-2); }
+
+.ar-vehicle-meta,
+.ar-day-meta { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+
+.ar-vehicle-body {
+  padding: 10px 12px 12px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
+}
+
+.ar-day-body {
+  padding: 0 10px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.ar-vehicle-driver {
+  margin: 0 0 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
 
 /* ─── Trip card ─────────────────────────────────────────────────────────────── */
 .trip-card {
