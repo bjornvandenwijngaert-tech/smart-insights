@@ -554,6 +554,15 @@ function vehicleStats(v) {
   };
 }
 
+function summaryMetaHtml(parts) {
+  return "<span class='ar-summary-parts'>" + parts.map(function (part, i) {
+    return "<span class='ar-summary-part'>"
+      + (i ? "<span class='ar-summary-sep' aria-hidden='true'>·</span>" : "")
+      + "<span class='ar-summary-text'>" + esc(part) + "</span>"
+      + "</span>";
+  }).join("") + "</span>";
+}
+
 // ─── Render (in-app preview) ───────────────────────────────────────────────
 function renderActivityReport(byDevice, addrMap) {
   var cols   = getActivityCols();
@@ -616,17 +625,18 @@ function renderActivityReport(byDevice, addrMap) {
         "<td>" + fmtDurWhole(stats.stopMins) + "</td>"
       ].concat(engineTotals.map(function (v3) { return "<td>" + v3 + "</td>"; })).join("");
 
-      var daySummary = block.date
-        + " · " + stats.stops + " stops"
-        + " · " + fmtActivityDistance(stats.distKm)
-        + " · engine on " + fmtDurWhole(stats.engineMins)
-        + " · drive " + fmtDurWhole(stats.driveMins)
-        + " · idle " + fmtDurWhole(stats.idleMins);
+      var daySummaryParts = [
+        stats.stops + " stops",
+        fmtActivityDistance(stats.distKm),
+        "engine on " + fmtDurWhole(stats.engineMins),
+        "drive " + fmtDurWhole(stats.driveMins),
+        "idle " + fmtDurWhole(stats.idleMins)
+      ];
 
       return "<details class='ar-day-fold'>"
         + "<summary class='ar-day-summary'>"
         + "<span class='ar-day-main'>" + esc(block.date) + "</span>"
-        + "<span class='ar-day-meta'>" + esc(daySummary) + "</span>"
+        + "<span class='ar-day-meta'>" + summaryMetaHtml(daySummaryParts) + "</span>"
         + "</summary>"
         + "<div class='ar-day-body'>"
         + "<div class='dd-table-wrap'><table class='dd-table'>"
@@ -637,17 +647,19 @@ function renderActivityReport(byDevice, addrMap) {
         + "</div></details>";
     }).join("");
 
-    var vehicleSummary = dayBlocks.length + " day" + (dayBlocks.length === 1 ? "" : "s")
-      + " · " + vStats.stops + " stops"
-      + " · " + fmtActivityDistance(vStats.distKm)
-      + " · engine on " + fmtDurWhole(vStats.engineMins)
-      + " · drive " + fmtDurWhole(vStats.driveMins)
-      + " · idle " + fmtDurWhole(vStats.idleMins);
+    var vehicleSummaryParts = [
+      dayBlocks.length + " day" + (dayBlocks.length === 1 ? "" : "s"),
+      vStats.stops + " stops",
+      fmtActivityDistance(vStats.distKm),
+      "engine on " + fmtDurWhole(vStats.engineMins),
+      "drive " + fmtDurWhole(vStats.driveMins),
+      "idle " + fmtDurWhole(vStats.idleMins)
+    ];
 
     return "<details class='ar-vehicle-fold'>"
       + "<summary class='ar-vehicle-summary'>"
       + "<span class='ar-vehicle-main'>" + esc(v.name) + "</span>"
-      + "<span class='ar-vehicle-meta'>" + esc(vehicleSummary) + "</span>"
+      + "<span class='ar-vehicle-meta'>" + summaryMetaHtml(vehicleSummaryParts) + "</span>"
       + "</summary>"
       + "<div class='ar-vehicle-body'>"
       + "<div class='ar-vehicle-driver'>Driver(s): " + esc(driverNames) + "</div>"

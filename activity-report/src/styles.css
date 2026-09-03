@@ -713,6 +713,28 @@ body {
 .ar-vehicle-meta,
 .ar-day-meta { font-size: 12px; color: var(--text-muted); font-weight: 500; }
 
+.ar-summary-parts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 16px;
+  row-gap: 3px;
+}
+
+.ar-summary-part {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.ar-summary-sep {
+  color: #9aa3b2;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.ar-summary-text { white-space: nowrap; }
+
 .ar-vehicle-body {
   padding: 10px 12px 12px;
   background: var(--surface-2);
