@@ -707,7 +707,7 @@ body {
 .ar-vehicle-fold[open] > .ar-vehicle-summary::before,
 .ar-day-fold[open] > .ar-day-summary::before { transform: rotate(90deg); }
 
-.ar-vehicle-main { font-size: 14px; font-weight: 700; color: var(--text); }
+.ar-vehicle-main { font-size: 13px; font-weight: 600; color: var(--text-2); }
 .ar-day-main { font-weight: 700; color: var(--text-2); }
 
 .ar-vehicle-meta,

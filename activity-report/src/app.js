@@ -530,6 +530,7 @@ function dayBlockStats(block) {
     distKm: dayDistKm,
     driveMins: dayDrive,
     idleMins: dayIdle,
+    engineMins: dayDrive + dayIdle,
     stopMins: dayStop,
     stops: block.rows.length
   };
@@ -543,7 +544,14 @@ function vehicleStats(v) {
   }, 0);
   var idle   = v.trips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
   var stop   = v.trips.reduce(function (s, t) { return s + (parseDurationToMins(t.stopDuration) || 0); }, 0);
-  return { distKm: distKm, driveMins: drive, idleMins: idle, stopMins: stop, stops: v.trips.length };
+  return {
+    distKm: distKm,
+    driveMins: drive,
+    idleMins: idle,
+    engineMins: drive + idle,
+    stopMins: stop,
+    stops: v.trips.length
+  };
 }
 
 // ─── Render (in-app preview) ───────────────────────────────────────────────
@@ -611,6 +619,7 @@ function renderActivityReport(byDevice, addrMap) {
       var daySummary = block.date
         + " · " + stats.stops + " stops"
         + " · " + fmtActivityDistance(stats.distKm)
+        + " · engine on " + fmtDurWhole(stats.engineMins)
         + " · drive " + fmtDurWhole(stats.driveMins)
         + " · idle " + fmtDurWhole(stats.idleMins);
 
@@ -631,6 +640,7 @@ function renderActivityReport(byDevice, addrMap) {
     var vehicleSummary = dayBlocks.length + " day" + (dayBlocks.length === 1 ? "" : "s")
       + " · " + vStats.stops + " stops"
       + " · " + fmtActivityDistance(vStats.distKm)
+      + " · engine on " + fmtDurWhole(vStats.engineMins)
       + " · drive " + fmtDurWhole(vStats.driveMins)
       + " · idle " + fmtDurWhole(vStats.idleMins);
 
@@ -987,6 +997,7 @@ function exportActivityExcel() {
     var vehicleSummary = dayBlocks.length + " day" + (dayBlocks.length === 1 ? "" : "s")
       + " · " + vStats.stops + " stops"
       + " · " + fmtActivityDistance(vStats.distKm)
+      + " · engine on " + fmtDurWhole(vStats.engineMins)
       + " · drive " + fmtDurWhole(vStats.driveMins)
       + " · idle " + fmtDurWhole(vStats.idleMins);
 
@@ -1004,6 +1015,7 @@ function exportActivityExcel() {
       var daySummary = block.date
         + " · " + stats.stops + " stops"
         + " · " + fmtActivityDistance(stats.distKm)
+        + " · engine on " + fmtDurWhole(stats.engineMins)
         + " · drive " + fmtDurWhole(stats.driveMins)
         + " · idle " + fmtDurWhole(stats.idleMins);
 
