@@ -554,8 +554,9 @@ function vehicleStats(v) {
   };
 }
 
-function summaryMetaHtml(parts) {
-  return "<span class='ar-summary-parts'>" + parts.map(function (part, i) {
+function summaryMetaHtml(parts, variant) {
+  var cls = "ar-summary-parts" + (variant ? " ar-summary-parts-" + variant : "");
+  return "<span class='" + cls + "'>" + parts.map(function (part, i) {
     return "<span class='ar-summary-part'>"
       + (i ? "<span class='ar-summary-sep' aria-hidden='true'>·</span>" : "")
       + "<span class='ar-summary-text'>" + esc(part) + "</span>"
@@ -636,7 +637,7 @@ function renderActivityReport(byDevice, addrMap) {
       return "<details class='ar-day-fold'>"
         + "<summary class='ar-day-summary'>"
         + "<span class='ar-day-main'>" + esc(block.date) + "</span>"
-        + "<span class='ar-day-meta'>" + summaryMetaHtml(daySummaryParts) + "</span>"
+        + "<span class='ar-day-meta'>" + summaryMetaHtml(daySummaryParts, "day") + "</span>"
         + "</summary>"
         + "<div class='ar-day-body'>"
         + "<div class='dd-table-wrap'><table class='dd-table'>"
@@ -659,7 +660,7 @@ function renderActivityReport(byDevice, addrMap) {
     return "<details class='ar-vehicle-fold'>"
       + "<summary class='ar-vehicle-summary'>"
       + "<span class='ar-vehicle-main'>" + esc(v.name) + "</span>"
-      + "<span class='ar-vehicle-meta'>" + summaryMetaHtml(vehicleSummaryParts) + "</span>"
+      + "<span class='ar-vehicle-meta'>" + summaryMetaHtml(vehicleSummaryParts, "vehicle") + "</span>"
       + "</summary>"
       + "<div class='ar-vehicle-body'>"
       + "<div class='ar-vehicle-driver'>Driver(s): " + esc(driverNames) + "</div>"

@@ -675,22 +675,26 @@ body {
   list-style: none;
   cursor: pointer;
   user-select: none;
+}
+
+.ar-day-summary {
   display: flex;
   align-items: baseline;
   gap: 10px;
+  padding: 8px 11px;
 }
 
-.ar-vehicle-summary::-webkit-details-marker,
-.ar-day-summary::-webkit-details-marker { display: none; }
-
 .ar-vehicle-summary {
+  display: grid;
+  grid-template-columns: auto minmax(240px, 430px) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
   padding: 10px 14px;
   border-left: 4px solid var(--accent);
 }
 
-.ar-day-summary {
-  padding: 8px 11px;
-}
+.ar-vehicle-summary::-webkit-details-marker,
+.ar-day-summary::-webkit-details-marker { display: none; }
 
 .ar-vehicle-summary::before,
 .ar-day-summary::before {
@@ -707,11 +711,20 @@ body {
 .ar-vehicle-fold[open] > .ar-vehicle-summary::before,
 .ar-day-fold[open] > .ar-day-summary::before { transform: rotate(90deg); }
 
-.ar-vehicle-main { font-size: 13px; font-weight: 600; color: var(--text-2); }
+.ar-vehicle-main {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .ar-day-main { font-weight: 700; color: var(--text-2); }
 
 .ar-vehicle-meta,
 .ar-day-meta { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+
+.ar-vehicle-meta { min-width: 0; }
 
 .ar-summary-parts {
   display: inline-flex;
@@ -734,6 +747,37 @@ body {
 }
 
 .ar-summary-text { white-space: nowrap; }
+
+.ar-summary-parts-vehicle {
+  display: grid;
+  grid-template-columns: 70px 84px 94px 132px 108px 92px;
+  column-gap: 12px;
+  row-gap: 3px;
+}
+
+.ar-summary-parts-vehicle .ar-summary-part {
+  display: block;
+}
+
+.ar-summary-parts-vehicle .ar-summary-sep {
+  display: none;
+}
+
+@media (max-width: 1260px) {
+  .ar-vehicle-summary {
+    grid-template-columns: auto minmax(240px, 1fr);
+    row-gap: 5px;
+    align-items: baseline;
+  }
+
+  .ar-vehicle-meta {
+    grid-column: 2;
+  }
+
+  .ar-summary-parts-vehicle {
+    grid-template-columns: repeat(3, minmax(120px, max-content));
+  }
+}
 
 .ar-vehicle-body {
   padding: 10px 12px 12px;
