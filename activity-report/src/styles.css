@@ -730,9 +730,9 @@ body {
   display: grid;
   grid-template-columns: auto minmax(240px, 430px) minmax(0, 1fr);
   align-items: end;
-  column-gap: 12px;
-  padding: 0 14px 6px 18px;
-  margin: 0 0 6px;
+  column-gap: 16px;
+  padding: 0 14px 8px 18px;
+  margin: 0 0 8px;
 }
 
 .ar-summary-head-arrow {
@@ -776,8 +776,8 @@ body {
 .ar-summary-parts-vehicle,
 .ar-summary-parts-vehicle-head {
   display: grid;
-  grid-template-columns: 70px 84px 94px 132px 108px 92px;
-  column-gap: 12px;
+  grid-template-columns: 96px 96px 124px 158px 158px 106px;
+  column-gap: 16px;
   row-gap: 3px;
 }
 
