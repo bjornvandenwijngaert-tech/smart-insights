@@ -4,6 +4,12 @@ A self-contained MyGeotab add-in containing only the Activity Report. It is a li
 of the Activity Report functions from the parent Smart Insights `src/app.js`, so it
 can be installed on its own by customers who don't want the full dashboard.
 
+The report is grouped as **asset -> historical driver -> local day**. Resolve
+the users referenced by `Trip.driver.id` with `Get User` / `UserSearch.userIds`,
+in batches of 100. Do not use the asset's current assignment to label older trips.
+Do not filter out archived users or users whose driver flag has since changed.
+Unknown assignments and unavailable driver names are labelled separately.
+
 Sibling of `../legacy-trip-report/`, which does the same for the Legacy Trip
 History Report.
 
@@ -67,13 +73,27 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
   call to stay under the 450/min limit. Failures fall back to raw coordinates.
 - **Durations** are MyGeotab `TimeSpan` strings (`"1.02:28:55"`), parsed by
   `parseDurationToMins`, which falls back to timestamp math when unparseable.
+- **Driver handovers:** group the vehicle's complete day-block rows by driver;
+  retain each row's original `prevTrip`, even when another driver drove it.
+- **Exports:** CSV repeats the actual driver per trip. PDF table headers repeat
+  vehicle/driver/day context. Excel has one worksheet per vehicle, driver
+  subsections, daily tables and an explicit Driver column on trip rows.
+- **Filtering:** vehicle filters update the KPI cards as well as the output.
+- **Calendar dates:** date inputs use `localDayKey`, matching displayed dates.
 
 ## Keep in sync
 
 Every fix to the Activity Report belongs in **both** this file's `src/app.js` and
 the parent `../src/app.js`, until the two are formally split into separate repos.
+The six historical-driver helpers are identical in the parent, this add-in and
+the Legacy Trip History standalone add-in. The regression suite checks this.
 
 ## Version
 
-v1.0.0 — initial extraction. Bump `config.json`, the `version-badge` in
+v1.1.0 — historical driver resolution and asset/driver/day grouping across HTML,
+CSV, PDF and Excel. Vehicle-filter KPIs and local date inputs corrected.
+
+Regression checks: `node --test tests/trip-report-drivers.test.cjs` from the repo root.
+
+Bump `config.json`, the `version-badge` in
 `index.html`, and the `?v=` cache-busting query on all three asset tags together.

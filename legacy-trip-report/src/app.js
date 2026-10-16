@@ -20,6 +20,7 @@ var state = {
   reportRaw:      [],
   reportData:     [],
   deviceMap:      {},
+  reportDriverMap: {}, // resolved User records for the drivers referenced by this report
   dbName:         "",
   server:         "",    // MyGeotab host for Trip History links, e.g. "my.geotab.com"
   hostVia:        "",    // where server/dbName came from, for the diagnostics line
@@ -27,6 +28,84 @@ var state = {
   legacyAddrMap:  null,  // "lat,lng" -> resolved address string
   legacyStopInfo: null   // Map(trip -> { mins, excluded }) — see buildLegacyStopInfo
 };
+
+// ─── Historical trip drivers (keep these helpers in all three report apps) ──
+// Trip.driver identifies the driver of THAT trip. Never substitute the device's
+// current driver: a vehicle can change hands repeatedly within the report range.
+function reportDriverId(trip) {
+  var driver = trip && trip.driver;
+  return typeof driver === "string" ? driver : (driver && driver.id) || "";
+}
+function isUnassignedDriver(id) {
+  return /^(?:UnknownDriver(?:Id)?|NoDriver(?:Id)?)$/i.test(id || "");
+}
+function reportUserName(user) {
+  if (!user) return "";
+  return [user.firstName || "", user.lastName || ""].join(" ").trim() || (user.name || "").trim();
+}
+function reportDriverInfo(trip) {
+  var id = reportDriverId(trip);
+  if (isUnassignedDriver(id)) return { key: "unassigned", id: "", name: "Unassigned / unknown driver", login: "" };
+  var user = id && state.reportDriverMap[id];
+  var name = (user && user.name) || reportUserName(trip && trip.driver) || ((trip && trip.driverName) || "").trim();
+  if (id) return { key: "id:" + id, id: id, name: name || "Driver name unavailable (" + id + ")", login: (user && user.login) || "" };
+  return name ? { key: "name:" + name, id: "", name: name, login: "" }
+    : { key: "unassigned", id: "", name: "Unassigned / unknown driver", login: "" };
+}
+function resolveReportDrivers(trips, done) {
+  state.reportDriverMap = {};
+  var unique = {};
+  trips.forEach(function (trip) {
+    var id = reportDriverId(trip);
+    if (id && !isUnassignedDriver(id)) unique[id] = true;
+  });
+  var ids = Object.keys(unique), offset = 0;
+  function nextBatch() {
+    if (offset >= ids.length) { done(); return; }
+    var batch = ids.slice(offset, offset + 100);
+    offset += batch.length;
+    // Explicit ids include historical/archived users. A current-driver-only or
+    // active-date search would lose drivers who worked earlier in the period.
+    apiCall("Get", { typeName: "User", search: { userIds: batch } }, function (users) {
+      (users || []).forEach(function (user) {
+        if (batch.indexOf(user.id) === -1) return;
+        var name = reportUserName(user);
+        if (name) state.reportDriverMap[user.id] = { name: name, login: user.name || "" };
+      });
+      nextBatch();
+    }, nextBatch); // keep trips visible; unresolved ids get an explicit label
+  }
+  nextBatch();
+}
+function groupReportDriverDays(dayBlocks) {
+  var groups = {}, order = [];
+  dayBlocks.forEach(function (block) {
+    block.rows.forEach(function (row) {
+      var info = reportDriverInfo(row.trip);
+      if (!groups[info.key]) {
+        groups[info.key] = { key: info.key, id: info.id, name: info.name, login: info.login, days: [], byDay: {} };
+        order.push(info.key);
+      }
+      var group = groups[info.key];
+      if (!group.byDay[block.date]) {
+        group.byDay[block.date] = { date: block.date, rows: [] };
+        group.days.push(group.byDay[block.date]);
+      }
+      // Preserve the predecessor from the WHOLE vehicle timeline, including a
+      // different driver's preceding trip. It defines the real start location.
+      group.byDay[block.date].rows.push(row);
+    });
+  });
+  var names = {};
+  order.forEach(function (key) { var name = groups[key].name; names[name] = (names[name] || 0) + 1; });
+  var result = order.map(function (key) {
+    var group = groups[key];
+    if (names[group.name] > 1) group.name += " (" + (group.login || group.id) + ")";
+    return group;
+  });
+  result.sort(function (a, b) { return a.name.localeCompare(b.name) || a.key.localeCompare(b.key); });
+  return result;
+}
 
 // ─── MyGeotab addin lifecycle ──────────────────────────────────────────────
 if (typeof geotab === "undefined") { var geotab = { addin: {} }; }
@@ -212,7 +291,7 @@ function buildLegacyByDevice(trips, deviceMap) {
     var vid = t.device && t.device.id; if (!vid) return;
     if (!byDevice[vid]) byDevice[vid] = { name: deviceMap[vid] || vid, trips: [], drivers: {} };
     byDevice[vid].trips.push(t);
-    if (t.driverName) byDevice[vid].drivers[t.driverName] = 1;
+    byDevice[vid].drivers[reportDriverInfo(t).name] = 1;
   });
   // Overnight detection needs each vehicle's trips in order, so it rides along
   // with the sort rather than being recomputed in each of the three renderers.
@@ -220,6 +299,7 @@ function buildLegacyByDevice(trips, deviceMap) {
   Object.keys(byDevice).forEach(function (vid) {
     byDevice[vid].trips.sort(function (a, b) { return new Date(a.start) - new Date(b.start); });
     buildLegacyStopInfo(byDevice[vid].trips).forEach(function (v, k) { stopInfo.set(k, v); });
+    byDevice[vid].driverGroups = groupReportDriverDays(buildLegacyDayBlocks(byDevice[vid].trips));
   });
   state.legacyStopInfo = stopInfo;
   return byDevice;
@@ -405,6 +485,8 @@ function runLegacyTripHistoryReport(from, to, done) {
         document.getElementById("report-output").innerHTML = "<p class='placeholder'>No trips found for this period.</p>";
         done(); return;
       }
+      document.getElementById("report-output").innerHTML = "<p class='placeholder'>Resolving driver names...</p>";
+      resolveReportDrivers(trips, function () {
       var byDevice = buildLegacyByDevice(trips, deviceMap);
       state.reportRaw  = trips;
       state.reportData = trips;
@@ -440,6 +522,7 @@ function runLegacyTripHistoryReport(from, to, done) {
         document.getElementById("export-pdf-legacy").classList.remove("hidden");
         done();
       });
+      });
     }, function (err) { reportError(err); done(); });
   }, function (err) { reportError(err); done(); });
 }
@@ -452,8 +535,8 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
 
   output.innerHTML = vids.map(function (vid) {
     var v = byDevice[vid];
-    var driverNames = Object.keys(v.drivers).join(", ") || "No driver assigned";
-    var dayBlocks = buildLegacyDayBlocks(v.trips, addrMap);
+    var driverHtml = v.driverGroups.map(function (driverGroup) {
+    var dayBlocks = driverGroup.days;
 
     var dayHtml = dayBlocks.map(function (block) {
       var rowsHtml = block.rows.map(function (r) {
@@ -498,9 +581,9 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
         "</tbody></table></div>";
     }).join("");
 
-    return "<div style='margin-bottom:24px'><h3 style='margin-bottom:4px'>" + esc(v.name) + "</h3>" +
-      "<div style='color:var(--text-muted);font-size:12px;margin-bottom:8px'>Driver(s): " + esc(driverNames) + "</div>" +
-      dayHtml + "</div>";
+    return "<section class='report-driver-group'><h4>Driver: " + esc(driverGroup.name) + "</h4>" + dayHtml + "</section>";
+    }).join("");
+    return "<section class='report-vehicle-group'><h3>" + esc(v.name) + "</h3>" + driverHtml + "</section>";
   }).join("");
 }
 
@@ -526,11 +609,28 @@ function populateReportVehicleFilter(data, deviceMap) {
   }
 }
 
+function updateLegacyReportSummary(trips) {
+  var distance = trips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
+  var driving = trips.reduce(function (s, t) { var d = parseDurationToMins(t.drivingDuration); return s + (d != null ? d : durationMins(t.start, t.stop)); }, 0);
+  var idle = trips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
+  var counted = trips.filter(function (t) { return legacyStopMins(t) != null; });
+  var stopped = counted.reduce(function (s, t) { return s + legacyStopMins(t); }, 0);
+  showReportSummary([
+    summaryCard("Total Distance", milesFromDistance(distance).toFixed(0), "mi"),
+    summaryCard("Total Stop Duration", fmtDurWhole(stopped), ""),
+    summaryCard("Total Idle Time", fmtDurWhole(idle), ""),
+    summaryCard("Total Travel Duration", fmtDurWhole(driving), ""),
+    summaryCard("Average Stop Duration", fmtDurWhole(counted.length ? stopped / counted.length : 0), ""),
+    summaryCard("Number of Stops", counted.length, "")
+  ]);
+}
+
 function filterReportByVehicle(vid) {
   var raw = state.reportRaw;
   state.reportData = !vid ? raw : raw.filter(function (t) { return t.device && t.device.id === vid; });
   var filteredByDevice = buildLegacyByDevice(state.reportData, state.deviceMap);
   state.legacyByDevice = filteredByDevice;
+  updateLegacyReportSummary(state.reportData);
   renderLegacyTripHistoryOutput(filteredByDevice, state.legacyAddrMap || {});
 }
 
@@ -539,21 +639,25 @@ function exportReportCsv() {
   var data = state.reportData;
   if (!data || !data.length) return;
   var addrMap = state.legacyAddrMap || {};
-  var rows = [["Vehicle", "Driver(s)", "Date", "Start Time", "Distance (mi)", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"]];
+  var rows = [["Vehicle", "Driver", "Date", "Start Time", "Distance (mi)", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"]];
   var byDevice = buildLegacyByDevice(data, state.deviceMap);
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
-    var driverNames = Object.keys(v.drivers).join(", ") || "No driver assigned";
-    v.trips.forEach(function (t) {
+    v.driverGroups.forEach(function (driverGroup) {
+    driverGroup.days.forEach(function (block) {
+    block.rows.forEach(function (row) {
+      var t = row.trip;
       var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
       var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
       var stopMins  = legacyStopMins(t);
       rows.push([
-        v.name, driverNames, localDayKey(t.start), fmtTime(t.start),
+        v.name, driverGroup.name, block.date, fmtTime(t.start),
         milesFromDistance(t.distance).toFixed(2), fmtDurPrecise(driveMins),
         addressForPoint(t.stopPoint, addrMap), fmtTime(t.stop),
         fmtDurPrecise(idleMins), stopMins != null ? fmtDurPrecise(stopMins) : ""
       ]);
+    });
+    });
     });
   });
   if (rows.length > 1) downloadCsvBlob(rows, "legacy_trip_history_report.csv");
@@ -645,12 +749,14 @@ function exportLegacyTripHistoryPdf() {
     if (yPos > pageH - 40) { doc.addPage(); yPos = 16; }
     doc.setTextColor(20, 20, 20); doc.setFontSize(12); doc.setFont("helvetica", "bold");
     doc.text(v.name, margin, yPos);
-    doc.setFontSize(9); doc.setFont("helvetica", "normal"); doc.setTextColor(100, 100, 100);
-    var driverNames = Object.keys(v.drivers).join(", ") || "No driver assigned";
-    doc.text("Driver(s): " + driverNames, margin, yPos + 5);
-    yPos += 10;
-
-    var dayBlocks = buildLegacyDayBlocks(v.trips, addrMap);
+    yPos += 6;
+    v.driverGroups.forEach(function (driverGroup) {
+    if (yPos > pageH - 45) { doc.addPage(); yPos = 16; }
+    doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(45, 55, 72);
+    var driverLines = doc.splitTextToSize("Driver: " + driverGroup.name, pageW - margin * 2);
+    doc.text(driverLines, margin, yPos);
+    yPos += driverLines.length * 5 + 3;
+    var dayBlocks = driverGroup.days;
     dayBlocks.forEach(function (block) {
       var body = [];
       var firstTrip = block.rows[0].trip;
@@ -702,7 +808,9 @@ function exportLegacyTripHistoryPdf() {
       ]);
 
       doc.autoTable({
-        startY: yPos, head: headers, body: body,
+        startY: yPos,
+        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + block.date, colSpan: 7 }]].concat(headers),
+        body: body,
         margin: { left: margin, right: margin },
         styles: { fontSize: 8, cellPadding: 2.2, textColor: [45, 55, 72] },
         headStyles: { fillColor: [0, 120, 212], textColor: 255, fontStyle: "bold", fontSize: 8 },
@@ -710,6 +818,7 @@ function exportLegacyTripHistoryPdf() {
       });
       yPos = doc.lastAutoTable.finalY + 6;
       if (yPos > pageH - 30) { doc.addPage(); yPos = 16; }
+    });
     });
     yPos += 4;
   });
@@ -747,7 +856,7 @@ function downloadCsvBlob(rows, filename) {
   var a    = document.createElement("a"); a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
-function fmtDateInput(d)      { return d.toISOString().slice(0, 10); }
+function fmtDateInput(d)      { return localDayKey(d); }
 function fmtDateShort(iso)    { return iso ? new Date(iso).toISOString().slice(0, 10) : ""; }
 function fmtDateReadable(iso) { if (!iso) return ""; var d = new Date(iso); return d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }); }
 function fmtTime(iso)         { return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--"; }

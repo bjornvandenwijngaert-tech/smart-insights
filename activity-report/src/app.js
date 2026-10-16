@@ -31,6 +31,7 @@ var state = {
   reportRaw:        [],
   reportData:       [],
   deviceMap:        {},
+  reportDriverMap:  {}, // Users resolved from the historical Trip.driver references
   dbName:           "",
   activityByDevice: null,        // { deviceId: { name, trips, drivers } }
   activityAddrMap:  null,        // "lat,lng" -> resolved address string
@@ -41,6 +42,84 @@ var state = {
 // Settings are stored under MyGeotab's own origin, which every add-in on that
 // database shares, so the key is namespaced away from the parent add-in's.
 var SETTINGS_KEY = "activity_report_standalone_settings";
+
+// ─── Historical trip drivers (keep these helpers in all three report apps) ──
+// Trip.driver identifies the driver of THAT trip. Never substitute the device's
+// current driver: a vehicle can change hands repeatedly within the report range.
+function reportDriverId(trip) {
+  var driver = trip && trip.driver;
+  return typeof driver === "string" ? driver : (driver && driver.id) || "";
+}
+function isUnassignedDriver(id) {
+  return /^(?:UnknownDriver(?:Id)?|NoDriver(?:Id)?)$/i.test(id || "");
+}
+function reportUserName(user) {
+  if (!user) return "";
+  return [user.firstName || "", user.lastName || ""].join(" ").trim() || (user.name || "").trim();
+}
+function reportDriverInfo(trip) {
+  var id = reportDriverId(trip);
+  if (isUnassignedDriver(id)) return { key: "unassigned", id: "", name: "Unassigned / unknown driver", login: "" };
+  var user = id && state.reportDriverMap[id];
+  var name = (user && user.name) || reportUserName(trip && trip.driver) || ((trip && trip.driverName) || "").trim();
+  if (id) return { key: "id:" + id, id: id, name: name || "Driver name unavailable (" + id + ")", login: (user && user.login) || "" };
+  return name ? { key: "name:" + name, id: "", name: name, login: "" }
+    : { key: "unassigned", id: "", name: "Unassigned / unknown driver", login: "" };
+}
+function resolveReportDrivers(trips, done) {
+  state.reportDriverMap = {};
+  var unique = {};
+  trips.forEach(function (trip) {
+    var id = reportDriverId(trip);
+    if (id && !isUnassignedDriver(id)) unique[id] = true;
+  });
+  var ids = Object.keys(unique), offset = 0;
+  function nextBatch() {
+    if (offset >= ids.length) { done(); return; }
+    var batch = ids.slice(offset, offset + 100);
+    offset += batch.length;
+    // Explicit ids include historical/archived users. A current-driver-only or
+    // active-date search would lose drivers who worked earlier in the period.
+    apiCall("Get", { typeName: "User", search: { userIds: batch } }, function (users) {
+      (users || []).forEach(function (user) {
+        if (batch.indexOf(user.id) === -1) return;
+        var name = reportUserName(user);
+        if (name) state.reportDriverMap[user.id] = { name: name, login: user.name || "" };
+      });
+      nextBatch();
+    }, nextBatch); // keep trips visible; unresolved ids get an explicit label
+  }
+  nextBatch();
+}
+function groupReportDriverDays(dayBlocks) {
+  var groups = {}, order = [];
+  dayBlocks.forEach(function (block) {
+    block.rows.forEach(function (row) {
+      var info = reportDriverInfo(row.trip);
+      if (!groups[info.key]) {
+        groups[info.key] = { key: info.key, id: info.id, name: info.name, login: info.login, days: [], byDay: {} };
+        order.push(info.key);
+      }
+      var group = groups[info.key];
+      if (!group.byDay[block.date]) {
+        group.byDay[block.date] = { date: block.date, rows: [] };
+        group.days.push(group.byDay[block.date]);
+      }
+      // Preserve the predecessor from the WHOLE vehicle timeline, including a
+      // different driver's preceding trip. It defines the real start location.
+      group.byDay[block.date].rows.push(row);
+    });
+  });
+  var names = {};
+  order.forEach(function (key) { var name = groups[key].name; names[name] = (names[name] || 0) + 1; });
+  var result = order.map(function (key) {
+    var group = groups[key];
+    if (names[group.name] > 1) group.name += " (" + (group.login || group.id) + ")";
+    return group;
+  });
+  result.sort(function (a, b) { return a.name.localeCompare(b.name) || a.key.localeCompare(b.key); });
+  return result;
+}
 
 // ─── MyGeotab addin lifecycle ──────────────────────────────────────────────
 // The registry must be reached through window, not a bare `geotab`: inside this
@@ -147,18 +226,12 @@ function fmtDist(km, dp) { return distVal(km).toFixed(dp == null ? 1 : dp) + " "
 function setupReports() {
   var today = new Date();
   var week  = new Date(today);
-  week.setDate(today.getDate() - 6);
+  week.setDate(today.getDate() - 7);
   document.getElementById("filter-from").value = fmtDateInput(week);
   document.getElementById("filter-to").value   = fmtDateInput(today);
 
   document.getElementById("run-report").addEventListener("click", runReport);
   document.getElementById("range-length").addEventListener("change", applyRangeLength);
-  document.getElementById("filter-from").addEventListener("change", function () {
-    syncToDateFromFromDate();
-  });
-  document.getElementById("filter-to").addEventListener("change", function () {
-    if (rangeLengthDays() != null) syncToDateFromFromDate();
-  });
   document.getElementById("export-activity-btn").addEventListener("click", function () {
     var fmt = document.getElementById("export-format").value;
     if      (fmt === "csv")   exportActivityCsv();
@@ -168,64 +241,26 @@ function setupReports() {
   applyRangeLength();
 }
 
-function rangeLengthDays() {
-  var raw = document.getElementById("range-length").value;
-  if (raw === "custom") return null;
-  var n = parseInt(raw, 10);
-  return isNaN(n) || n < 1 ? null : n;
-}
-
-// Preset lengths are driven by the From date: pick a start day, and To follows.
-// Custom leaves both date inputs editable.
-function syncToDateFromFromDate() {
-  var days = rangeLengthDays();
-  if (days == null) return;
-  var from = document.getElementById("filter-from").value;
-  if (!from) return;
-  document.getElementById("filter-to").value = addDaysDateInput(from, days - 1);
-}
-
+// Recompute filter-from from filter-to based on the selected preset length.
+// "custom" leaves both date inputs alone so the user can pick any range manually.
 function applyRangeLength() {
-  var days = rangeLengthDays();
+  var days = document.getElementById("range-length").value;
+  if (days === "custom") return;
   var toEl = document.getElementById("filter-to");
-  if (days == null) {
-    toEl.disabled = false;
-    toEl.title = "";
-    return;
-  }
-
-  toEl.disabled = true;
-  toEl.title = "Set by the selected range";
-
-  var fromEl = document.getElementById("filter-from");
-  if (!fromEl.value) fromEl.value = fmtDateInput(new Date());
-
-  syncToDateFromFromDate();
-}
-
-function parseDateInput(v) {
-  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || "");
-  if (!m) return null;
-  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
-}
-
-function addDaysDateInput(v, days) {
-  var d = parseDateInput(v);
-  if (!d) return v || "";
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
+  var to   = toEl.value ? new Date(toEl.value + "T00:00:00") : new Date();
+  var from = new Date(to);
+  from.setDate(to.getDate() - (parseInt(days, 10) - 1));
+  document.getElementById("filter-from").value = fmtDateInput(from);
+  document.getElementById("filter-to").value   = fmtDateInput(to);
 }
 
 function runReport() {
-  applyRangeLength();
-
   var from   = document.getElementById("filter-from").value;
   var to     = document.getElementById("filter-to").value;
   var btn    = document.getElementById("run-report");
   var output = document.getElementById("report-output");
 
   if (!from || !to) { alert("Please select a date range."); return; }
-  if (from > to)    { alert("From date is after To date."); return; }
 
   btn.disabled = true; btn.textContent = "Loading...";
   output.innerHTML = "<p class='placeholder'>Fetching data...</p>";
@@ -297,8 +332,7 @@ function localDayKey(iso) {
   return d.getFullYear() + "-" + (m < 10 ? "0" : "") + m + "-" + (day < 10 ? "0" : "") + day;
 }
 
-// Group fetched trips by device, sorted chronologically. Driver names come
-// straight off Trip.driverName.
+// Group by stable Device.id, historical trip driver, then local calendar day.
 //
 // NOTE: unlike the Legacy Trip History report, the Activity Report deliberately
 // does not suppress overnight parks — it reports raw Trip.stopDuration, so the
@@ -309,10 +343,11 @@ function buildByDevice(trips, deviceMap) {
     var vid = t.device && t.device.id; if (!vid) return;
     if (!byDevice[vid]) byDevice[vid] = { name: deviceMap[vid] || vid, trips: [], drivers: {} };
     byDevice[vid].trips.push(t);
-    if (t.driverName) byDevice[vid].drivers[t.driverName] = 1;
+    byDevice[vid].drivers[reportDriverInfo(t).name] = 1;
   });
   Object.keys(byDevice).forEach(function (vid) {
     byDevice[vid].trips.sort(function (a, b) { return new Date(a.start) - new Date(b.start); });
+    byDevice[vid].driverGroups = groupReportDriverDays(buildDayBlocks(byDevice[vid].trips));
   });
   return byDevice;
 }
@@ -481,6 +516,8 @@ function runActivityReport(from, to, done) {
         document.getElementById("report-output").innerHTML = "<p class='placeholder'>No trips found for this period.</p>";
         done(); return;
       }
+      document.getElementById("report-output").innerHTML = "<p class='placeholder'>Resolving driver names...</p>";
+      resolveReportDrivers(trips, function () {
       var byDevice = buildByDevice(trips, deviceMap);
       state.reportRaw        = trips;
       state.reportData       = trips;
@@ -514,54 +551,9 @@ function runActivityReport(from, to, done) {
         saveSettings(from, to);
         done();
       });
+      });
     }, function (err) { reportError(err); done(); });
   }, function (err) { reportError(err); done(); });
-}
-
-function dayBlockStats(block) {
-  var dayDistKm = block.rows.reduce(function (s, r) { return s + (r.trip.distance || 0); }, 0);
-  var dayDrive  = block.rows.reduce(function (s, r) {
-    var dm = parseDurationToMins(r.trip.drivingDuration);
-    return s + (dm != null ? dm : durationMins(r.trip.start, r.trip.stop));
-  }, 0);
-  var dayIdle   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.idlingDuration) || 0); }, 0);
-  var dayStop   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.stopDuration) || 0); }, 0);
-  return {
-    distKm: dayDistKm,
-    driveMins: dayDrive,
-    idleMins: dayIdle,
-    engineMins: dayDrive + dayIdle,
-    stopMins: dayStop,
-    stops: block.rows.length
-  };
-}
-
-function vehicleStats(v) {
-  var distKm = v.trips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
-  var drive  = v.trips.reduce(function (s, t) {
-    var dm = parseDurationToMins(t.drivingDuration);
-    return s + (dm != null ? dm : durationMins(t.start, t.stop));
-  }, 0);
-  var idle   = v.trips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
-  var stop   = v.trips.reduce(function (s, t) { return s + (parseDurationToMins(t.stopDuration) || 0); }, 0);
-  return {
-    distKm: distKm,
-    driveMins: drive,
-    idleMins: idle,
-    engineMins: drive + idle,
-    stopMins: stop,
-    stops: v.trips.length
-  };
-}
-
-function summaryMetaHtml(parts, variant) {
-  var cls = "ar-summary-parts" + (variant ? " ar-summary-parts-" + variant : "");
-  return "<span class='" + cls + "'>" + parts.map(function (part, i) {
-    return "<span class='ar-summary-part'>"
-      + (i ? "<span class='ar-summary-sep' aria-hidden='true'>·</span>" : "")
-      + "<span class='ar-summary-text'>" + esc(part) + "</span>"
-      + "</span>";
-  }).join("") + "</span>";
 }
 
 // ─── Render (in-app preview) ───────────────────────────────────────────────
@@ -570,115 +562,68 @@ function renderActivityReport(byDevice, addrMap) {
   var output = document.getElementById("report-output");
   var vids   = Object.keys(byDevice);
   if (!vids.length) { output.innerHTML = "<p class='placeholder'>No trips found.</p>"; return; }
-
   var extraHeaders = activityEngineColHeaders(cols);
   var baseHeaders  = ["Start Time", "Start Location", "Distance / Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
   var allHeaders   = baseHeaders.concat(extraHeaders);
   var colSpan      = allHeaders.length;
-  var summaryHeader = "<div class='ar-summary-head'>"
-    + "<span class='ar-summary-head-arrow' aria-hidden='true'></span>"
-    + "<span class='ar-summary-head-vehicle'>Vehicle</span>"
-    + "<span class='ar-summary-head-meta'>"
-    + summaryMetaHtml([
-      "Days reported",
-      "Stops",
-      "Distance driven",
-      "Engine on Hours",
-      "Actual Driving time",
-      "Idling Time"
-    ], "vehicle-head")
-    + "</span></div>";
 
-  output.innerHTML = summaryHeader + vids.map(function (vid) {
+  output.innerHTML = vids.map(function (vid) {
     var v = byDevice[vid];
-    var driverNames = Object.keys(v.drivers).join(", ") || "No driver assigned";
-    var dayBlocks   = buildDayBlocks(v.trips);
-    var vStats      = vehicleStats(v);
+    var driverHtml = v.driverGroups.map(function (driverGroup) {
+    var dayBlocks = driverGroup.days;
 
     var dayHtml = dayBlocks.map(function (block) {
-      var stats = dayBlockStats(block);
       var rowsHtml = block.rows.map(function (r) {
-        var t          = r.trip;
-        var driveMins  = parseDurationToMins(t.drivingDuration);
-        if (driveMins == null) driveMins = durationMins(t.start, t.stop);
-        var idleMins   = parseDurationToMins(t.idlingDuration) || 0;
-        var stopMins   = parseDurationToMins(t.stopDuration);
-        var engineVals = activityEngineColValues(t, cols);
-        return "<tr>"
-          + "<td>" + fmtTime(t.start) + "</td>"
-          + "<td>" + esc(startAddressForRow(r, addrMap)) + "</td>"
-          + "<td>" + fmtActivityDistance(t.distance) + "<br><span style='color:var(--text-muted);font-size:11px'>" + fmtDurPrecise(driveMins) + "</span></td>"
-          + "<td>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>"
-          + "<td>" + fmtTime(t.stop) + "</td>"
-          + "<td>" + fmtDurPrecise(idleMins) + "</td>"
-          + "<td>" + (stopMins != null ? fmtDurPrecise(stopMins) : "—") + "</td>"
-          + engineVals.map(function (v2) { return "<td>" + v2 + "</td>"; }).join("")
-          + "</tr>";
+        var t         = r.trip;
+        var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
+        var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
+        var stopMins  = parseDurationToMins(t.stopDuration);
+        var engineVals= activityEngineColValues(t, cols);
+        return "<tr>" +
+          "<td>" + fmtTime(t.start) + "</td>" +
+          "<td>" + esc(startAddressForRow(r, addrMap)) + "</td>" +
+          "<td>" + fmtActivityDistance(t.distance) + "<br><span style='color:var(--text-muted);font-size:11px'>" + fmtDurPrecise(driveMins) + "</span></td>" +
+          "<td>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>" +
+          "<td>" + fmtTime(t.stop) + "</td>" +
+          "<td>" + fmtDurPrecise(idleMins) + "</td>" +
+          "<td>" + (stopMins != null ? fmtDurPrecise(stopMins) : "—") + "</td>" +
+          engineVals.map(function (v) { return "<td>" + v + "</td>"; }).join("") +
+        "</tr>";
       }).join("");
 
+      var dayDistKm = block.rows.reduce(function (s, r) { return s + (r.trip.distance || 0); }, 0);
+      var dayDrive  = block.rows.reduce(function (s, r) { var dm = parseDurationToMins(r.trip.drivingDuration); return s + (dm != null ? dm : durationMins(r.trip.start, r.trip.stop)); }, 0);
+      var dayIdle   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.idlingDuration) || 0); }, 0);
+      var dayStop   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.stopDuration) || 0); }, 0);
       var engineTotals = activityEngineDayTotals(block.rows, cols);
+
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
-
-      var startingFromHtml = "<tr><td colspan='" + colSpan + "' style='font-weight:600;background:var(--surface-2)'>"
-        + block.date + " — Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap))
-        + "</td></tr>";
+      var startingFromHtml = "<tr><td colspan='" + colSpan + "' style='font-weight:600;background:var(--surface-2)'>" + block.date + " — Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
       var ignitionHtml = prevTrip
-        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start)
-          + "</td><td colspan='4'>(Ignition On)</td><td>—</td><td></td>"
-          + extraHeaders.map(function () { return "<td></td>"; }).join("") + "</tr>"
+        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='4'>(Ignition On)</td><td>—</td><td></td>" + extraHeaders.map(function () { return "<td></td>"; }).join("") + "</tr>"
         : "";
 
       var totalRowCells = [
         "<td>" + block.date + " Total</td>",
         "<td></td>",
-        "<td>" + fmtActivityDistance(stats.distKm) + " in " + fmtDurWhole(stats.driveMins) + "</td>",
+        "<td>" + fmtActivityDistance(dayDistKm) + " in " + fmtDurWhole(dayDrive) + "</td>",
         "<td></td>",
-        "<td>" + stats.stops + " stops</td>",
-        "<td>" + fmtDurWhole(stats.idleMins) + "</td>",
-        "<td>" + fmtDurWhole(stats.stopMins) + "</td>"
-      ].concat(engineTotals.map(function (v3) { return "<td>" + v3 + "</td>"; })).join("");
+        "<td>" + block.rows.length + " stops</td>",
+        "<td>" + fmtDurWhole(dayIdle) + "</td>",
+        "<td>" + fmtDurWhole(dayStop) + "</td>"
+      ].concat(engineTotals.map(function (v) { return "<td>" + v + "</td>"; })).join("");
 
-      var daySummaryParts = [
-        stats.stops + " stops",
-        fmtActivityDistance(stats.distKm),
-        "engine on " + fmtDurWhole(stats.engineMins),
-        "drive " + fmtDurWhole(stats.driveMins),
-        "idle " + fmtDurWhole(stats.idleMins)
-      ];
-
-      return "<details class='ar-day-fold'>"
-        + "<summary class='ar-day-summary'>"
-        + "<span class='ar-day-main'>" + esc(block.date) + "</span>"
-        + "<span class='ar-day-meta'>" + summaryMetaHtml(daySummaryParts, "day") + "</span>"
-        + "</summary>"
-        + "<div class='ar-day-body'>"
-        + "<div class='dd-table-wrap'><table class='dd-table'>"
-        + "<thead><tr>" + allHeaders.map(function (h) { return "<th>" + h + "</th>"; }).join("") + "</tr></thead>"
-        + "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml
-        + "<tr style='font-weight:700;background:var(--surface-2)'>" + totalRowCells + "</tr>"
-        + "</tbody></table></div>"
-        + "</div></details>";
+      return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table'>" +
+        "<thead><tr>" + allHeaders.map(function (h) { return "<th>" + h + "</th>"; }).join("") + "</tr></thead>" +
+        "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml +
+        "<tr style='font-weight:700;background:var(--surface-2)'>" + totalRowCells + "</tr>" +
+        "</tbody></table></div>";
     }).join("");
 
-    var vehicleSummaryParts = [
-      dayBlocks.length + " day" + (dayBlocks.length === 1 ? "" : "s"),
-      vStats.stops + " stops",
-      fmtActivityDistance(vStats.distKm),
-      "engine on " + fmtDurWhole(vStats.engineMins),
-      "drive " + fmtDurWhole(vStats.driveMins),
-      "idle " + fmtDurWhole(vStats.idleMins)
-    ];
-
-    return "<details class='ar-vehicle-fold'>"
-      + "<summary class='ar-vehicle-summary'>"
-      + "<span class='ar-vehicle-main'>" + esc(v.name) + "</span>"
-      + "<span class='ar-vehicle-meta'>" + summaryMetaHtml(vehicleSummaryParts, "vehicle") + "</span>"
-      + "</summary>"
-      + "<div class='ar-vehicle-body'>"
-      + "<div class='ar-vehicle-driver'>Driver(s): " + esc(driverNames) + "</div>"
-      + dayHtml
-      + "</div></details>";
+    return "<section class='report-driver-group'><h4>Driver: " + esc(driverGroup.name) + "</h4>" + dayHtml + "</section>";
+    }).join("");
+    return "<section class='report-vehicle-group'><h3>" + esc(v.name) + "</h3>" + driverHtml + "</section>";
   }).join("");
 }
 
@@ -697,19 +642,16 @@ function saveSettings(from, to) {
 function restoreSettings() {
   try {
     var raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) {
-      var s = JSON.parse(raw);
-      if (s.len)  { var lenEl = document.getElementById("range-length"); if (lenEl) lenEl.value = s.len; }
-      if (s.from) { var fromEl = document.getElementById("filter-from"); if (fromEl) fromEl.value = s.from; }
-      if (s.to)   { var toEl   = document.getElementById("filter-to");   if (toEl)   toEl.value   = s.to;   }
-      // Re-check saved column selections (default is only total-engine checked)
-      ["total-engine", "drive-only", "idle-only", "work-split"].forEach(function (id) {
-        var el = document.getElementById("col-" + id);
-        if (el) el.checked = (s.cols || ["total-engine"]).indexOf(id) !== -1;
-      });
-    }
-
-    applyRangeLength();
+    if (!raw) return;
+    var s = JSON.parse(raw);
+    if (s.len)  { var lenEl = document.getElementById("range-length"); if (lenEl) lenEl.value = s.len; }
+    if (s.from) { var fromEl = document.getElementById("filter-from"); if (fromEl) fromEl.value = s.from; }
+    if (s.to)   { var toEl   = document.getElementById("filter-to");   if (toEl)   toEl.value   = s.to;   }
+    // Re-check saved column selections (default is only total-engine checked)
+    ["total-engine", "drive-only", "idle-only", "work-split"].forEach(function (id) {
+      var el = document.getElementById("col-" + id);
+      if (el) el.checked = (s.cols || ["total-engine"]).indexOf(id) !== -1;
+    });
   } catch (e) {}
 }
 
@@ -745,6 +687,21 @@ function populateReportVehicleFilter(data, deviceMap) {
     sel.addEventListener("change", function () { filterReportByVehicle(this.value); });
   }
 }
+function updateActivityReportSummary(trips) {
+  var distance = trips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
+  var driving = trips.reduce(function (s, t) { var d = parseDurationToMins(t.drivingDuration); return s + (d != null ? d : durationMins(t.start, t.stop)); }, 0);
+  var idle = trips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
+  var stopped = trips.reduce(function (s, t) { return s + (parseDurationToMins(t.stopDuration) || 0); }, 0);
+  showReportSummary([
+    summaryCard("Total Distance", distVal(distance).toFixed(0), distUnit()),
+    summaryCard("Total Stop Duration", fmtDurWhole(stopped), ""),
+    summaryCard("Total Idle Time", fmtDurWhole(idle), ""),
+    summaryCard("Total Travel Duration", fmtDurWhole(driving), ""),
+    summaryCard("Average Stop Duration", fmtDurWhole(trips.length ? stopped / trips.length : 0), ""),
+    summaryCard("Number of Stops", trips.length, "")
+  ]);
+}
+
 function filterReportByVehicle(vid) {
   var raw = state.reportRaw;
   state.reportData = !vid ? raw : raw.filter(function (item) {
@@ -752,6 +709,7 @@ function filterReportByVehicle(vid) {
   });
   var filteredByDevice = buildByDevice(state.reportData, state.deviceMap);
   state.activityByDevice = filteredByDevice;
+  updateActivityReportSummary(state.reportData);
   renderActivityReport(filteredByDevice, state.activityAddrMap || {});
 }
 
@@ -763,25 +721,28 @@ function exportActivityCsv() {
   if (!data || !data.length) return;
   var from = document.getElementById("filter-from").value;
   var to   = document.getElementById("filter-to").value;
-  var baseHeaders = ["Vehicle", "Driver(s)", "Date", "Start Time", "Start Location", "Distance (" + distUnit() + ")", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
+  var baseHeaders = ["Vehicle", "Driver", "Date", "Start Time", "Start Location", "Distance (" + distUnit() + ")", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
   var rows = [baseHeaders.concat(activityEngineColHeaders(cols))];
   var byDevice = buildByDevice(data, state.deviceMap);
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
-    var driverNames = Object.keys(v.drivers).join(", ") || "No driver assigned";
-    v.trips.forEach(function (t, i) {
+    v.driverGroups.forEach(function (driverGroup) {
+    driverGroup.days.forEach(function (block) {
+    block.rows.forEach(function (r) {
+      var t = r.trip;
       var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
       var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
       var stopMins  = parseDurationToMins(t.stopDuration);
-      // trips are sorted per vehicle, so the previous one holds this trip's origin
-      var startAddr = startAddressForRow({ prevTrip: i > 0 ? v.trips[i - 1] : null }, addrMap);
+      var startAddr = startAddressForRow(r, addrMap);
       var baseRow = [
-        v.name, driverNames, fmtDateShort(t.start), fmtTime(t.start), startAddr,
+        v.name, driverGroup.name, block.date, fmtTime(t.start), startAddr,
         distVal(t.distance).toFixed(2), fmtDurPrecise(driveMins),
         addressForPoint(t.stopPoint, addrMap), fmtTime(t.stop),
         fmtDurPrecise(idleMins), stopMins != null ? fmtDurPrecise(stopMins) : ""
       ];
       rows.push(baseRow.concat(activityEngineColValues(t, cols)));
+    });
+    });
     });
   });
   if (rows.length > 1) downloadCsvBlob(rows, "activity_report_" + from + "_to_" + to + ".csv");
@@ -877,11 +838,14 @@ function exportActivityPdf() {
     if (yPos > pageH - 40) { doc.addPage(); yPos = 16; }
     doc.setTextColor(20, 20, 20); doc.setFontSize(12); doc.setFont("helvetica", "bold");
     doc.text(v.name, margin, yPos);
-    doc.setFontSize(9); doc.setFont("helvetica", "normal"); doc.setTextColor(100, 100, 100);
-    doc.text("Driver(s): " + (Object.keys(v.drivers).join(", ") || "No driver assigned"), margin, yPos + 5);
-    yPos += 10;
-
-    var dayBlocks = buildDayBlocks(v.trips);
+    yPos += 6;
+    v.driverGroups.forEach(function (driverGroup) {
+    if (yPos > pageH - 45) { doc.addPage(); yPos = 16; }
+    doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(45, 55, 72);
+    var driverLines = doc.splitTextToSize("Driver: " + driverGroup.name, pageW - margin * 2);
+    doc.text(driverLines, margin, yPos);
+    yPos += driverLines.length * 5 + 3;
+    var dayBlocks = driverGroup.days;
     dayBlocks.forEach(function (block) {
       var body = [];
       var firstTrip = block.rows[0].trip;
@@ -932,7 +896,9 @@ function exportActivityPdf() {
       body.push(totalRow);
 
       doc.autoTable({
-        startY: yPos, head: headers, body: body,
+        startY: yPos,
+        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + block.date, colSpan: headers[0].length }]].concat(headers),
+        body: body,
         margin: { left: margin, right: margin },
         columnStyles: pdfColumnStyles,
         styles: { fontSize: 7.5, cellPadding: 2, textColor: [45, 55, 72], overflow: "linebreak" },
@@ -940,6 +906,7 @@ function exportActivityPdf() {
       });
       yPos = doc.lastAutoTable.finalY + 6;
       if (yPos > pageH - 30) { doc.addPage(); yPos = 16; }
+    });
     });
     yPos += 4;
   });
@@ -965,43 +932,84 @@ function exportActivityExcel() {
   var dUnit = distUnit();
   var vids  = Object.keys(byDevice);
 
-  var allTrips = [];
-  vids.forEach(function (vid) { allTrips = allTrips.concat(byDevice[vid].trips); });
-
+  // ── Build per-vehicle KPI data ────────────────────────────────────────────
+  var allTrips    = [];
+  var vehicleKpis = []; // [{name, distKm, engineMins}]
+  vids.forEach(function (vid) {
+    var v = byDevice[vid];
+    allTrips = allTrips.concat(v.trips);
+    var distKm    = v.trips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
+    var driveMins = v.trips.reduce(function (s, t) { var dm = parseDurationToMins(t.drivingDuration); return s + (dm != null ? dm : durationMins(t.start, t.stop)); }, 0);
+    var idleMins  = v.trips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
+    vehicleKpis.push({ name: v.name, distKm: distKm, engineMins: driveMins + idleMins });
+  });
   var totalDistKm = allTrips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
-  var totalDrive  = allTrips.reduce(function (s, t) {
-    var dm = parseDurationToMins(t.drivingDuration);
-    return s + (dm != null ? dm : durationMins(t.start, t.stop));
-  }, 0);
+  var totalDrive  = allTrips.reduce(function (s, t) { var dm = parseDurationToMins(t.drivingDuration); return s + (dm != null ? dm : durationMins(t.start, t.stop)); }, 0);
   var totalIdle   = allTrips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
   var totalStop   = allTrips.reduce(function (s, t) { return s + (parseDurationToMins(t.stopDuration) || 0); }, 0);
   var distKpi     = fmtActivityDistanceKpi(totalDistKm);
 
+  // ── Render grouped bar chart to an offscreen canvas ───────────────────────
+  var chartCanvas = document.createElement("canvas");
+  chartCanvas.width  = 900;
+  chartCanvas.height = 420;
+
+  var distValues   = vehicleKpis.map(function (k) { return parseFloat(distVal(k.distKm).toFixed(2)); });
+  var engineValues = vehicleKpis.map(function (k) { return parseFloat((k.engineMins / 60).toFixed(2)); }); // hours
+
+  var chartInst = new Chart(chartCanvas.getContext("2d"), {
+    type: "bar",
+    data: {
+      labels: vehicleKpis.map(function (k) { return k.name; }),
+      datasets: [
+        { label: "Distance (" + dUnit + ")", data: distValues,   backgroundColor: "#0078D4", borderRadius: 4 },
+        { label: "Engine On (hrs)",          data: engineValues, backgroundColor: "#059669", borderRadius: 4 }
+      ]
+    },
+    options: {
+      animation: false,
+      responsive: false,
+      plugins: {
+        legend: { display: true, position: "top", labels: { font: { size: 13 }, color: "#374151", padding: 16 } },
+        title: {
+          display: true,
+          text: "Vehicle Summary — " + from + " to " + to,
+          font: { size: 15, weight: "bold" },
+          color: "#111827",
+          padding: { bottom: 16 }
+        }
+      },
+      scales: {
+        x: { ticks: { color: "#374151", font: { size: 11 } }, grid: { color: "rgba(0,0,0,.06)" } },
+        y: { beginAtZero: true, ticks: { color: "#374151", font: { size: 11 } }, grid: { color: "rgba(0,0,0,.06)" } }
+      }
+    }
+  });
+  var chartPng = chartCanvas.toDataURL("image/png");
+  chartInst.destroy();
+  // Strip the data:image/png;base64, prefix — ExcelJS wants raw base64
+  var chartBase64 = chartPng.replace(/^data:image\/png;base64,/, "");
+
+  // ── Build workbook with ExcelJS ───────────────────────────────────────────
   var wb = new ExcelJS.Workbook();
   wb.creator = "Activity Report";
   wb.created = new Date();
 
-  var extraHeaders  = activityEngineColHeaders(cols);
-  var baseHeaders   = ["Start Time", "Start Location", "Distance / Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
-  var allColHeaders = baseHeaders.concat(extraHeaders);
+  // ── Summary sheet — KPIs left (cols A-B), chart right (cols D-K) ──────────
+  var summarySheet = wb.addWorksheet("Summary");
+  summarySheet.columns = [
+    { width: 36 }, { width: 24 }, { width: 4 },  // A, B, C (spacer)
+    { width: 18 }, { width: 18 }, { width: 18 }, { width: 18 },
+    { width: 18 }, { width: 18 }, { width: 18 }   // D-J (chart area)
+  ];
 
-  var ws = wb.addWorksheet("Activity Report");
-  ws.columns = [
-    { width: 12 }, { width: 44 }, { width: 28 }, { width: 44 },
-    { width: 14 }, { width: 16 }, { width: 16 }
-  ].concat(extraHeaders.map(function () { return { width: 22 }; }));
-
-  var titleRow = ws.addRow(["Activity Report — " + from + " to " + to]);
+  var titleRow = summarySheet.addRow(["Activity Report — " + from + " to " + to]);
   titleRow.font = { bold: true, size: 13 };
-  if (state.dbName) {
-    var dbRow = ws.addRow(["Database: " + state.dbName]);
-    dbRow.font = { color: { argb: "FF6B7280" }, size: 10 };
-  }
-  ws.addRow([]);
+  summarySheet.addRow([]);
 
-  var metricHdr = ws.addRow(["Metric", "Value"]);
-  metricHdr.font = { bold: true };
-  metricHdr.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8F4FD" } };
+  var hdrRow = summarySheet.addRow(["Metric", "Value"]);
+  hdrRow.font = { bold: true };
+  hdrRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8F4FD" } };
 
   [
     ["Total Distance (" + dUnit + ")", distKpi.value + " " + distKpi.unit],
@@ -1011,68 +1019,72 @@ function exportActivityExcel() {
     ["Number of Stops", allTrips.length],
     ["Average Stop Duration", fmtDurWhole(allTrips.length ? totalStop / allTrips.length : 0)],
     ["Vehicles in Report", vids.length]
-  ].forEach(function (m) { ws.addRow(m); });
-  ws.addRow([]);
+  ].forEach(function (r) { summarySheet.addRow(r); });
+
+  // Chart image — placed to the right of the KPI table (col D = index 3, row 0)
+  var imgId = wb.addImage({ base64: chartBase64, extension: "png" });
+  summarySheet.addImage(imgId, { tl: { col: 3, row: 0 }, br: { col: 10, row: 20 } });
+
+  // ── Per-vehicle sheets ────────────────────────────────────────────────────
+  var extraHeaders  = activityEngineColHeaders(cols);
+  var baseHeaders   = ["Driver", "Start Time", "Start Location", "Distance (" + dUnit + ")", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
+  var allColHeaders = baseHeaders.concat(extraHeaders);
+  var colWidths     = [{ width: 28 }, { width: 12 }, { width: 42 }, { width: 16 }, { width: 42 }, { width: 12 }, { width: 16 }, { width: 16 }]
+                       .concat(extraHeaders.map(function () { return { width: 22 }; }));
 
   vids.forEach(function (vid) {
-    var v = byDevice[vid];
-    var driverNames = Object.keys(v.drivers).join(", ") || "No driver assigned";
-    var vStats = vehicleStats(v);
-    var dayBlocks = buildDayBlocks(v.trips);
+    var v           = byDevice[vid];
+    var sheetName   = v.name.replace(/[\\\/\?\*\[\]:]/g, "_").slice(0, 31) || ("V" + vid.slice(-4));
+    var baseSheetName = sheetName, sheetSuffix = 2;
+    while (wb.worksheets.some(function (sheet) { return sheet.name.toLowerCase() === sheetName.toLowerCase(); })) {
+      var suffix = " (" + sheetSuffix++ + ")";
+      sheetName = baseSheetName.slice(0, 31 - suffix.length) + suffix;
+    }
+    var ws          = wb.addWorksheet(sheetName);
+    ws.columns      = colWidths;
 
-    var vehicleSummary = dayBlocks.length + " day" + (dayBlocks.length === 1 ? "" : "s")
-      + " · " + vStats.stops + " stops"
-      + " · " + fmtActivityDistance(vStats.distKm)
-      + " · engine on " + fmtDurWhole(vStats.engineMins)
-      + " · drive " + fmtDurWhole(vStats.driveMins)
-      + " · idle " + fmtDurWhole(vStats.idleMins);
+    var r1 = ws.addRow(["Activity Report — " + v.name]);
+    r1.font = { bold: true, size: 12 };
+    var r2 = ws.addRow(["Period: " + from + " to " + to]);
+    r2.font = { color: { argb: "FF6B7280" }, size: 10 };
+    ws.addRow([]);
 
-    var vehicleRow = ws.addRow([v.name, vehicleSummary]);
-    vehicleRow.font = { bold: true, color: { argb: "FF27325D" } };
-    vehicleRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F8FF" } };
-
-    var driverRow = ws.addRow(["Driver(s): " + driverNames]);
-    driverRow.font = { color: { argb: "FF6B7280" }, size: 10 };
-
-    dayBlocks.forEach(function (block) {
-      var stats = dayBlockStats(block);
+    v.driverGroups.forEach(function (driverGroup) {
+    var driverRow = ws.addRow(["Driver: " + driverGroup.name]);
+    driverRow.font = { bold: true, size: 11 };
+    driverRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8F4FD" } };
+    driverGroup.days.forEach(function (block) {
       var prevTrip = block.rows[0].prevTrip;
 
-      var daySummary = block.date
-        + " · " + stats.stops + " stops"
-        + " · " + fmtActivityDistance(stats.distKm)
-        + " · engine on " + fmtDurWhole(stats.engineMins)
-        + " · drive " + fmtDurWhole(stats.driveMins)
-        + " · idle " + fmtDurWhole(stats.idleMins);
+      // "Starting from" header row
+      var sfRow = ws.addRow([block.date + " — Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)]);
+      sfRow.font = { bold: true };
+      sfRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F5F5" } };
 
-      var dayHdr = ws.addRow([block.date, daySummary]);
-      dayHdr.font = { bold: true };
-      dayHdr.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF1F3F7" } };
-
-      var sfRow = ws.addRow(["Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)]);
-      sfRow.font = { italic: true, color: { argb: "FF4B5563" } };
-
+      // Column header row
       var hRow = ws.addRow(allColHeaders);
       hRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
       hRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0078D4" } };
 
+      // Ignition On row
       if (prevTrip) {
-        var ignRow = [fmtTime(block.rows[0].trip.start), "(Ignition On)", "", "", "", "—", ""];
+        var ignRow = [driverGroup.name, fmtTime(block.rows[0].trip.start), "(Ignition On)", "", "", "", "—", ""];
         for (var ei = 0; ei < extraHeaders.length; ei++) ignRow.push("");
         var iRow = ws.addRow(ignRow);
         iRow.font = { color: { argb: "FFD97706" } };
       }
 
+      // Trip rows
       block.rows.forEach(function (r) {
         var t         = r.trip;
-        var driveMins = parseDurationToMins(t.drivingDuration);
-        if (driveMins == null) driveMins = durationMins(t.start, t.stop);
+        var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
         var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
         var stopMins  = parseDurationToMins(t.stopDuration);
         var row = [
+          driverGroup.name,
           fmtTime(t.start),
           startAddressForRow(r, addrMap),
-          fmtActivityDistance(t.distance) + " | " + fmtDurPrecise(driveMins),
+          fmtActivityDistance(t.distance),
           addressForPoint(t.stopPoint, addrMap),
           fmtTime(t.stop),
           fmtDurPrecise(idleMins),
@@ -1081,22 +1093,27 @@ function exportActivityExcel() {
         ws.addRow(row.concat(activityEngineColValues(t, cols)));
       });
 
-      var totalRow = ws.addRow([
+      // Daily total row
+      var dayDistKm = block.rows.reduce(function (s, r) { return s + (r.trip.distance || 0); }, 0);
+      var dayDrive  = block.rows.reduce(function (s, r) { var dm = parseDurationToMins(r.trip.drivingDuration); return s + (dm != null ? dm : durationMins(r.trip.start, r.trip.stop)); }, 0);
+      var dayIdle   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.idlingDuration) || 0); }, 0);
+      var dayStop   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.stopDuration) || 0); }, 0);
+      var tRow = ws.addRow([
+        driverGroup.name,
         block.date + " Total",
         "",
-        fmtActivityDistance(stats.distKm) + " in " + fmtDurWhole(stats.driveMins),
+        fmtActivityDistance(dayDistKm) + " in " + fmtDurWhole(dayDrive),
         "",
-        stats.stops + " stops",
-        fmtDurWhole(stats.idleMins),
-        fmtDurWhole(stats.stopMins)
+        block.rows.length + " stops",
+        fmtDurWhole(dayIdle),
+        fmtDurWhole(dayStop)
       ].concat(activityEngineDayTotals(block.rows, cols)));
-      totalRow.font = { bold: true };
-      totalRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F5F5" } };
+      tRow.font = { bold: true };
+      tRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F5F5" } };
 
       ws.addRow([]);
     });
-
-    ws.addRow([]);
+    });
   });
 
   // ── Write and trigger download ─────────────────────────────────────────────
@@ -1120,7 +1137,7 @@ function downloadCsvBlob(rows, filename) {
   var a    = document.createElement("a"); a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
-function fmtDateInput(d)      { return d.toISOString().slice(0, 10); }
+function fmtDateInput(d)      { return localDayKey(d); }
 function fmtDateShort(iso)    { return iso ? new Date(iso).toISOString().slice(0, 10) : ""; }
 function fmtDateReadable(iso) { if (!iso) return ""; var d = new Date(iso); return d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }); }
 function fmtTime(iso)         { return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--"; }

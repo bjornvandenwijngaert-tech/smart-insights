@@ -1,154 +1,382 @@
-# Legacy Trip History — Standalone Add-in — Session Context
+# Smart Insights — Session Context
 
 ## What this is
-A **single-purpose** MyGeotab add-in that produces one thing: the Legacy Trip
-History Report (a classic per-vehicle/per-driver/per-day trip log with reverse-geocoded
-stop addresses, CSV + branded PDF export). It is a self-contained extraction of
-the Legacy Trip History feature from the parent **Smart Insights** add-in (one
-level up), created so the report can be pitched to Geotab and installed on its
-own without the Dashboard / Suggestions / Map surface.
-
-Hosted (intended): https://bjornvandenwijngaert-tech.github.io/smart-insights/legacy-trip-report/index.html
+A MyGeotab add-in hosted on GitHub Pages, registered via `config.json`.
+Hosted at: https://bjornvandenwijngaert-tech.github.io/smart-insights/index.html
 Registered under: `ActivityLink/` path in MyGeotab.
-Add-in lifecycle key: `geotab.addin.legacyTripHistory`.
 Support email: bjornvandenwijngaert@geotabsmb.com
 
 ---
 
 ## File structure
 ```
-legacy-trip-report/
-  config.json       — MyGeotab add-in registration (name "Legacy Trip History")
-  index.html        — Minimal shell: report toolbar + output. Loads jsPDF +
-                      jsPDF-autotable (NO Chart.js / Leaflet / SheetJS — not needed)
+smart-insights/
+  index.html        — App shell, modal HTML, CDN scripts
+  config.json       — MyGeotab add-in registration
   src/
-    app.js          — Only the legacy-report logic + its dependencies
-    styles.css      — Copied whole from the parent app (contains unused rules for
-                      widgets/modals/map; safe, can be trimmed later)
-    logo-data.js    — Geotab logo as a base64 data URL (GEOTAB_LOGO_DATAURL)
-    geotab-logo.png — Source Geotab wordmark (707x130, navy #27325D bg)
+    app.js          — All logic (state, API calls, rendering, exports)
+    styles.css      — All styling
+    logo-data.js    — Auto-generated: Geotab logo as a base64 data URL constant
+                      (GEOTAB_LOGO_DATAURL) used in PDF exports. Loaded before app.js.
+    geotab-logo.png — Source Geotab wordmark (707x130, navy #27325D bg). Regenerate
+                      logo-data.js from this if the logo is ever swapped.
   CONTEXT.md        — This file
 ```
 
 ---
 
 ## Tech stack
-- **MyGeotab Add-in API** — `geotab.addin.legacyTripHistory` lifecycle (initialize)
-- **jsPDF 2.5.1 + AutoTable 3.8.2** — branded PDF export
-- Plain JS for CSV export; no build step, no npm, all via CDN
+- **MyGeotab Add-in API** — `geotab.addin.smartInsights` lifecycle (initialize / focus / blur)
+- **Chart.js 4.4.0** — Stacked-per-vehicle bars + per-vehicle lines in dashboard widgets
+- **Leaflet 1.9.4 + OpenStreetMap tiles** — Infraction map (tab + drill-down mini-map)
+- **SheetJS (xlsx 0.18.5)** — Excel export
+- **jsPDF 2.5.1 + AutoTable 3.8.2** — PDF export
+- All via CDN, no build step, no npm
 
 ---
 
-## How the report works
-1. Fetch `Device` (name map) + `Trip` for the selected range.
-2. Resolve each unique historical `Trip.driver.id` with `Get User`, using
-   `UserSearch.userIds` in batches of 100. Do not filter to currently active users
-   or currently enabled drivers; archived users may own trips in this range.
-3. Group by `Device.id`, then driver identity, then local day. Device names are
-   display labels only. Build the chronological vehicle timeline before grouping,
-   so start locations and overnight detection still use the actual prior trip.
-4. Reverse-geocode every unique `Trip.stopPoint` via MyGeotab's **`GetAddresses`**
-   method (coordinates never leave Geotab; deduped to ~1m precision; batched up
-   to 400/call under the 450/min limit). No third-party geocoder.
-5. Render per-vehicle/per-driver/per-day tables: "Starting from" lead-in, "(Ignition On)"
-   marker, trip rows, daily total. KPIs across the whole range.
-6. Export CSV (one trip per row, with that trip's singular `Driver`) or branded
-   PDF (Geotab logo, navy header, KPI grid, vehicle/driver/day sections). PDF table
-   headers repeat the vehicle, driver and date on continuation pages.
+## Current version: v2.10.0
 
-Length selector (Daily / Weekly / Monthly / Custom) auto-fills the from/to date
-inputs; Custom leaves them for manual entry. Optional vehicle filter.
+### Changelog since v2.2.0
+- **v2.10.0** — Historical drivers in Legacy Trip History and Activity Report.
+  Resolve the unique `Trip.driver.id` references through `Get User` with
+  `UserSearch.userIds` (100 ids per batch, without active-user/driver-only
+  filters). Names come from `firstName` + `lastName`, falling back to login.
+  Group reports as **asset -> driver -> local day**, keyed by ids rather than
+  display names. CSV now contains a singular per-trip `Driver`. PDFs repeat
+  vehicle/driver/day context in table headers. Activity Excel retains one sheet
+  per vehicle, with driver subsections, daily tables and a Driver column on each
+  trip. Starting locations still follow the whole vehicle timeline through
+  handovers. Unknown assignments and inaccessible driver names are distinct.
+  Vehicle filters refresh the summary cards. Date input formatting is local,
+  fixing the UTC/BST preset day shift. Mirrored to standalone Legacy v1.3.0 and
+  Activity v1.1.0. Run `node --test tests/trip-report-drivers.test.cjs`.
+- **v2.9.1** — **`esc()` now escapes single quotes.** Every attribute in
+  `src/app.js` is written with single-quoted delimiters, and the rison Trip
+  History URLs quote their date values with apostrophes, so the first `'` in the
+  URL closed the `href` and truncated it at `dateRange:(endDate:` — the link
+  opened a bare map. This is the same bug the Activity Report add-in hit in its
+  v1.0.0–v1.1.0 and fixed the same way; it is a property of the escaper, not the
+  URL grammar. Two `textContent` assignments that were wrapping error messages in
+  `esc()` had the call removed — `textContent` needs no escaping, and with `'`
+  now escaped they would have printed `&#39;` literally.
+- **v2.9.0** — **Trip History deep links in the Legacy Trip History Report.**
+  Every trip row now ends in a `Trip History` link that opens MyGeotab's Trips
+  History page scoped to that vehicle, that day, with the replay player open and
+  the matching trip card expanded. Ported from the Activity Report add-in
+  (`~/repos/vehicle-activity-log`), which is where the URL shape was reverse
+  engineered — the SDK guide's "Using MyGeotab URLs" examples are stale (2015-era
+  `entityType` / `selectedEntities` are no longer read and produce a blank page).
+  New helpers in `src/app.js`: `resolveHost()`, `cardDatePart()`,
+  `tripHistoryUrl()`, `tripHistoryCell()`; new CSS class `.trip-history-link`.
+  The host comes from `window.location` (add-in pages are injected, not iframed)
+  with the session database as a fallback; when neither resolves the cell renders
+  as disabled text rather than a link that lands on an empty page. Times in the
+  link are browser-local, matching every other time this report prints. Mirrored
+  into the standalone `legacy-trip-report/` add-in (v1.2.0). PDF and CSV exports
+  are unchanged — the link is on-screen only.
+- **v2.7.0** — **Legacy Trip History Report** (Reports tab, `legacy-trip-history`).
+  Recreates a classic per-vehicle/per-day trip-log export (start time, distance,
+  driving duration, reverse-geocoded stop address, arrival time, idle duration,
+  stop duration, daily totals). Customer sets the range via a **length selector**
+  (Daily / Weekly / Monthly / Custom) that auto-fills the existing from/to date
+  inputs. Addresses are resolved via MyGeotab's own **`GetAddresses`** API
+  (`Trip.stopPoint` \u2192 coordinates \u2192 `GetAddresses` \u2192 `ReverseGeocodeAddress`) \u2014
+  **not** a third-party geocoder, so coordinates never leave Geotab's
+  infrastructure and there's no external rate-limit bottleneck (450 req/min,
+  batched up to 400 unique coordinates per call, deduped by ~1m precision so
+  repeat stops like depots only cost one lookup). Exports as a branded PDF
+  (`Export PDF` button, jsPDF + AutoTable) matching the reference format's
+  structure: header, dark "Report Totals for" bar, 2\u00d73 KPI grid, then one
+  table per vehicle per day with a "Starting from" lead-in row, an
+  "(Ignition On)" gap row, trip rows, and a daily total row. Also has a flat
+  CSV export and an in-app HTML preview.
+  **Geotab logo branding**: both PDF exports (Legacy Trip History + drill-down)
+  carry the Geotab wordmark top-right in the header. The logo PNG has a navy
+  (#27325D) background, so both PDF header bars are drawn in that same navy
+  (`GEOTAB_NAVY`) for a seamless fit (previously bright blue #0078D4; KPI boxes
+  and table header rows stay accent-blue). Logo is embedded as a base64 data URL
+  in `src/logo-data.js` (no external fetch, works offline). Helper:
+  `drawPdfHeaderLogo()`. Excel export is intentionally left unbranded \u2014 the
+  SheetJS Community build in use cannot embed images.
+  **Known simplification**: the reference format splits a "Working Total" row
+  (work-hours only) from a separate "Total" row (whole day incl. after-hours
+  idling), using Trip's `Work*`/`AfterHours*` fields. v1 collapses this into a
+  single combined "Total" row per day. Revisit if the customer needs that split.
+  **Bug fixes (post-initial-build):**
+  - `parseDurationToMins()` originally only handled ISO-8601 durations, but
+    MyGeotab serializes TimeSpan as .NET strings ("hh:mm:ss" / "d.hh:mm:ss").
+    That made every `stopDuration`/`idlingDuration` fail to parse \u2192 stop durations
+    showed "\u2014" (looked like "no stops") and idle showed 0m everywhere. Parser now
+    handles .NET TimeSpan, ISO-8601, and numeric-seconds formats.
+  - The "(Ignition On)" lead-in row used to print the gap between the previous
+    trip's stop and the day's first drive in the Idle column \u2014 which for an
+    overnight park showed as e.g. "17h 08m idle". It now shows "\u2014": that gap is
+    parked/overnight time, not idle, and Trip data exposes no pre-drive idle value.
+  - NOTE: because Geotab's `StopDuration` runs to the *next* trip's start, the
+    last trip before an overnight legitimately carries a very large stop duration,
+    which inflates the "Average Stop Duration" KPI. Left as-is (accurate, matches
+    the reference tool); revisit if the customer wants cross-day gaps excluded.
 
-## Current version: v1.3.0
+  **Distance / MPG units fix (app-wide).** `Trip.Distance` is in KILOMETRES per
+  the MyGeotab SDK, but the whole codebase had been treating it as metres
+  (`/1609.344` for miles, `/1000` for km, and `calcMpg` dividing by 1609.344).
+  That made every distance and MPG figure ~1000x too small (a multi-hour drive
+  showed ~0.01 mi). Fixed across ALL reports (Daily Trips, Monthly Carbon,
+  Speeding, Daily Fuel Economy, Legacy Trip History) and every surface
+  (in-app tables, CSV, PDF, Excel, drill-downs, dashboard widgets): km->mi now
+  uses `* 0.621371`, `calcMpg()` takes km, and Daily Trips no longer divides by
+  1000. Odometer conversions (`nextOdometerReading / 1000`) are left as-is \u2014
+  Odometer genuinely is in metres. Speed (`maximumSpeed`->mph via `toMph`) was
+  always correct and is unchanged.
 
-- Driver names now come from the `User` referenced by each trip, not the
-  non-standard `Trip.driverName` field or the asset's current driver.
-- Unknown/unassigned trips have their own section. A known driver id whose name
-  cannot be read is labelled `Driver name unavailable (...)`, not unassigned.
-- Grouping is by driver id, so different users with the same display name remain
-  separate. Their login/id disambiguates their headings when necessary.
-- Vehicle filtering now updates summary cards as well as tables and exports.
-- Date inputs use local calendar dates, avoiding UTC/BST preset shifts.
-- Regression checks: `node --test tests/trip-report-drivers.test.cjs` from the
-  repository root. Tests cover both standalone reports and both parent reports.
+  **Standalone extraction.** The Legacy Trip History Report also exists as a
+  self-contained standalone add-in under `legacy-trip-report/` (its own
+  config.json, index.html, src/app.js, styles.css, logo). It's a lift of the
+  legacy-report functions from this file for pitching to Geotab / installing on
+  its own. See `legacy-trip-report/CONTEXT.md`. KEEP THE TWO IN SYNC until they
+  are formally split into separate repos.
+
+  The **Activity Report** now has the same treatment under `activity-report/`
+  (own config.json, index.html, src/app.js, styles.css, logo). Same rule: KEEP IT
+  IN SYNC with the Activity Report functions in `src/app.js`. See
+  `activity-report/CONTEXT.md`.
+
+  **Scheduled email reports \u2014 investigated, not built (deferred).** A MyGeotab
+  add-in is client-side only: it runs solely while a user has the page open, with
+  no server, background process, or cron. Scheduled emailing is therefore
+  impossible from the add-in alone \u2014 it needs a server-side backend (e.g. a Cloud
+  Run Function on Cloud Scheduler that authenticates to the MyGeotab API, renders
+  the PDF server-side, and emails via SendGrid), with the add-in optionally
+  providing a schedule-config UI stored in AddInData. Deferred by customer choice;
+  only the bug fixes above were shipped this round.
+- **v2.3.0** — Dashboard widgets snap to avoid overlap while dragging (live snap on
+  `mousemove`). `computeSnapPosition` is a pure function that reads every other
+  widget's real geometry via `getBoundingClientRect()` (grid-local), finds the
+  nearest free slot along the axis closest to the dragged tile's centre, 8px gap.
+- **v2.4.0** — Dashboard layout persisted in MyGeotab **AddInData** (`addInId:
+  "SmartInsightsDashboard"`) instead of localStorage, so the layout is shared across
+  all users with add-in access and is per-database. First load migrates any old
+  localStorage layout then clears it. localStorage remains a fallback for local dev
+  (no `state.api`).
+  **This did not fix the cross-database bleed.** The claim above was wrong. AddInData
+  was put in front of localStorage but localStorage was never removed from the code
+  paths that matter, and the migration path actively spreads the bleed. Still broken as
+  of 2026-08-19. See "Open bugs" below before touching persistence.
+- **v2.5.0** — Charts + map. All event widgets now render **stacked-per-vehicle bars**
+  (distinct colour per vehicle) with **adaptive granularity** (per-day, or per-hour when
+  the range ≤ 24h). Clicking a vehicle segment opens the drill-down pre-filtered to that
+  vehicle + time bucket. Fuel economy is **per-vehicle lines** (MPG is an average, cannot
+  stack). New **Map tab** plots infraction locations, and the drill-down has a **Table/Map
+  toggle** for exception/speeding. Map uses **Leaflet + OpenStreetMap** (CDN).
+- **v2.6.0** — **Incident replay** modal (`#incident-modal`). A "Replay" button on each
+  exception drill-down row opens a per-event reconstruction: LogRecord path on a Leaflet
+  map (grey cause/aftermath + red `activeFrom→activeTo` infraction segment, start/end +
+  scrub marker) synced to a Chart.js **speed line** (event portion red). Hovering/tracing
+  the speed graph moves the marker along the route; readout shows time · mph · INFRACTION.
+  Window = event ±60s. Needs ≥2 GPS points, else shows a "not enough GPS data" message.
 
 ---
 
-## Important shared-code note
-This is a **lift** of the legacy-report functions from the parent
-`../src/app.js`. If you fix a bug in one, mirror it in the other until they are
-formally split into separate repos. Functions kept in sync include:
-`parseDurationToMins`, `fmtDurWhole`, `fmtDurPrecise`, `milesFromDistance`,
-`buildLegacyByDevice`, `resolveStopAddresses`, `formatReverseGeocodeAddress`,
-`addressForPoint`, `buildLegacyDayBlocks`, `renderLegacyTripHistoryOutput`,
-`exportLegacyTripHistoryPdf`, `drawPdfHeaderLogo`, `localDayKey`,
-`buildLegacyStopInfo`, `legacyStopMins`, `OVERNIGHT_MIN_HOURS`,
-`resolveHost`, `cardDatePart`, `tripHistoryUrl`, `tripHistoryCell`, `esc`.
-The historical driver helpers (`reportDriverId`, `isUnassignedDriver`,
-`reportUserName`, `reportDriverInfo`, `resolveReportDrivers`,
-`groupReportDriverDays`) are also copied into the standalone Activity Report.
-Keep those three copies identical; the regression suite checks this.
+## Open bugs
 
-**`esc()` must escape single quotes.** Every attribute here is written with
-single-quoted delimiters and the rison Trip History URLs quote their dates with
-apostrophes, so an `esc()` that leaves `'` alone truncates every href at
-`dateRange:(endDate:` and the link opens a bare map. All three copies of this
-code have now hit that bug; do not "simplify" the escaper.
+### Dashboard layout bleeds between databases (open, high priority)
 
-The Trip History deep-link helpers have a **third** copy, in the Activity Report
-add-in at `~/repos/vehicle-activity-log` (`replayUrl`, `resolveHost`,
-`cardDatePart`), which is where the URL shape was reverse engineered and is the
-one to check first if links stop working. Two deliberate differences here:
-that repo builds times from the MyGeotab **profile** timezone, this report uses
-browser-local (matching `fmtTime` / `localDayKey`, which it has always used);
-and rows here always have a Trip, so there is no ±15 min padded fallback window.
+**Reported 2026-08-19, confirmed still present.** A dashboard layout built in one
+database shows up in another. v2.4.0 claimed to fix this and did not. Treat the
+changelog entry as unreliable and this section as the current truth.
 
-The parent also has an **Activity Report** that shares `buildLegacyByDevice`,
-`buildLegacyDayBlocks`, `resolveStopAddresses`, `addressForPoint` and
-`parseDurationToMins`. Anything put into those helpers changes both reports.
-The overnight rule below is deliberately kept out of them: it lives in
-`legacyStopMins`, which only the legacy call sites read.
+Not yet reproduced against two live databases. What follows is read from the code in
+`src/app.js:3515-3622`, so the mechanisms are real but which one is firing has not
+been confirmed.
 
----
+**Why AddInData alone did not fix it.** AddInData genuinely is per-database, so the
+happy path is correct. The problem is that localStorage was left in place underneath
+it, and the localStorage key carries no database identity:
 
-## Data notes / known behaviour (inherited from the parent)
-- **Distance is in KILOMETRES** (`Trip.Distance`). km->mi via `* 0.621371`.
-  (The parent app originally treated it as metres, making distances ~1000x too
-  small; corrected here from the start.)
-- **Durations** (`idlingDuration`, `stopDuration`, `drivingDuration`) come as
-  .NET TimeSpan strings ("hh:mm:ss" / "d.hh:mm:ss"); `parseDurationToMins`
-  handles that plus ISO-8601 and numeric-seconds.
-- **"(Ignition On)" row** shows no duration on purpose — the gap to the previous
-  trip is overnight/parked time, not idle, and Trip data has no pre-drive idle.
-- **Overnight parks are excluded** (v1.1.0). `Trip.StopDuration` runs to the next
-  trip's start, so a van parked at 18:00 and driven at 07:00 arrived as a single
-  13-hour stop on the day's last trip and inflated Total and Average Stop
-  Duration. `buildLegacyStopInfo` now drops a stop when all three hold: it is
-  that vehicle's last trip of the **local** day, it runs longer than
-  `OVERNIGHT_MIN_HOURS` (3), and it ends on a later local day. A long mid-shift
-  stop that ends the same day still counts. Excluded stops show an em-dash and
-  are left out of the day total, Total Stop Duration, Average Stop Duration and
-  Number of Stops — so average x count still equals the total. A trip with no
-  `stopDuration` (usually the last in the range) is excluded for the same reason.
-  Removal is silent by design: no separate "Parked" column.
-- **Days are bucketed in local time** (v1.1.0), via `localDayKey`. Previously
-  `fmtDateShort` (`toISOString`) grouped in UTC while every displayed time was
-  local, so a 00:30 BST trip filed under the previous day. `fmtDateShort` itself
-  is unchanged — the parent still uses it for `bucketKeyFor` and the trips list.
-- **Simplification**: the reference format's "Working Total" vs after-hours
-  "Total" split is collapsed into one daily total (Trip `Work*`/`AfterHours*`
-  fields not yet used).
-- **Idle sits inside stop, not beside it.** Geotab's `StopDuration` "also
-  includes any idling done at the end of a trip", so "Total Stop Duration" and
-  "Total Idle Time" must not be added together. Not yet reflected in the
-  labelling — open cosmetic item.
+```js
+localStorage.setItem("smartinsights-dashboard", details);
+```
+
+Add-in pages are injected into the MyGeotab page, not iframed, so localStorage is
+scoped to the MyGeotab origin (`my.geotab.com`). Every database on that server shares
+one origin, therefore one key. Anything written there is visible to every database the
+user opens on that server. This is the bleed vector and it is still live.
+
+**Four candidate causes, in the order worth checking.**
+
+1. **Stale `state.dashboardDataId` across a database switch** (`3544`, `3602`).
+   The AddInData record id is cached on `state`. Switching database in the MyGeotab UI
+   is client-side navigation and may not tear down the add-in's JS scope, which is
+   shared across pages by design. If the id survives the switch, `saveDashboard` takes
+   the `Set` branch and writes database B's layout into database A's record. This is
+   the strongest suspect because it needs no localStorage involvement at all and it
+   matches "persistent between databases" exactly.
+
+2. **The migration path plants one database's layout into another** (`3606-3613`).
+   On finding no AddInData record, the code restores whatever is in localStorage and
+   then saves it as *this* database's record. One stale localStorage entry from
+   database A therefore becomes database B's permanent saved layout. The
+   `removeItem` on `3612` fires after the damage, and it is also ordered wrong: it runs
+   synchronously while the `Add` on `3554` is still in flight, and if that `Add` fails
+   the error handler on `3561` writes the key straight back.
+
+3. **Silent localStorage fallbacks on any API failure** (`3561`, `3619`).
+   A failed `Add` or `Get` drops to the shared key with only a `console.warn`. The user
+   sees a layout that looks saved and has in fact been written somewhere every other
+   database can read. Failures are invisible in normal use.
+
+4. **`Get` takes `results[0]` unconditionally** (`3600-3602`).
+   Concurrent first-saves by different users can create more than one record for the
+   same `addInId`. Whichever comes back first wins, silently. Not the reported symptom
+   but it will produce divergent layouts between users in the same database.
+
+**Direction when this gets worked on** (not decided, do not treat as a plan):
+namespace any localStorage key by database and clear the cached record id whenever the
+database changes, rather than adding more fallbacks. The database name is already read
+for the db badge. Bear in mind that removing the fallback entirely means a failed
+AddInData call loses the layout, so the failure needs to become visible to the user
+instead of a `console.warn`.
+
+**Verification this needs, which no previous fix had.** Two real databases, a distinct
+layout saved in each, then switch between them both with and without a full page
+reload, and confirm each keeps its own. The v2.4.0 fix was reasoned about rather than
+tested across databases, which is how a wrong claim reached the changelog.
 
 ---
 
-## Deployment
-- Intended to be hosted under the same GitHub Pages as Smart Insights, at the
-  `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
-  its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.3.0` — increment on each release, and keep the
-  `version-badge` in index.html and `version` in config.json in step.
-- Push is manual (same workflow as the parent app).
+## What's been built
+
+### Three tabs
+1. **Dashboard** — Draggable/resizable widgets. Exception-rule widgets (added from Suggestions) + 5 preset widget types (added via "+ Add Widget" picker)
+2. **Reports** — 5 report types: Daily Trips, Monthly Carbon, Speeding >80mph, Daily Fuel Economy, **Legacy Trip History Report**. Each with summary KPIs, filterable table, CSV export, vehicle filter. Legacy Trip History additionally has a length selector (Daily/Weekly/Monthly/Custom) and a branded PDF export. (Upcoming Maintenance + Maintenance Spend removed — see Maintenance data constraint below.)
+3. **Suggestions** — Top 8 exception rules ranked by violation count, with intelligence overlays
+
+### Three preset dashboard widget types
+| Type | Chart | Stats | Data source |
+|------|-------|-------|-------------|
+| Monthly Carbon Report | Bar (12 months CO₂ kg) | Total CO₂ / Fleet MPG / Best MPG | Trip.fuelUsed × 2.4 kg/L |
+| Speeding >80mph | Bar (daily count, 30d) | Total / Per Day / Worst Day | Trip.maximumSpeed > 128.747 km/h |
+| Daily Fuel Economy | Line (daily MPG, 30d) | Fleet MPG / Best Day / Worst Day | Trip.fuelUsed + Trip.distance |
+
+(Upcoming Maintenance + Maintenance Spend removed from the picker — see Maintenance data constraint below.)
+
+### Widget picker
+- "+ Add Widget" button in dashboard toolbar opens a picker modal
+- All 5 preset types available as cards with icon, name, description
+- Existing Suggestions → "+ Dashboard" flow unchanged
+
+### Suggestions tab intelligence
+- Fetches 4 resources in parallel: devices, rules, current 30-day exceptions, previous 30-day exceptions
+- **Fleet health score** (0–100) displayed at top: computed from violations-per-vehicle rate, colour-coded green/amber/red
+- Each suggestion card shows:
+  - SVG icon (category-matched, no emojis)
+  - Severity badge: Critical (≥30 violations) / Warning (≥10) / Low (<10)
+  - Trend badge: % change vs previous 30-day period (↑ bad / ↓ good / Stable)
+  - Top 3 offending vehicles with mini bar chart
+  - "+ Dashboard" button to pin to dashboard
+- Colour-coded left border per severity
+
+### Dashboard
+- Widgets persist via `localStorage` (key: `smartinsights-dashboard`)
+- **Edit Layout mode** (button in toolbar):
+  - Activates drag and resize on widgets
+  - Full-screen dot grid appears on `body` (`body.edit-mode-active`)
+  - Remove (×) button on widgets only visible in edit mode
+  - Dashed blue outline on dashboard canvas
+- **View mode** (default):
+  - Widgets are locked, no handles visible
+  - Clicking the chart/stats area of a widget opens the drill-down modal
+  - Header area click does NOT trigger drill-down
+- Each widget has a stats bar: Total / Daily Avg / Worst Day
+
+### Drill-down modal
+Opens when any widget is clicked in view mode. Filters and columns are type-aware.
+- **Exception type**: date range / vehicle / driver filters → Vehicle, Driver, Date, Time, Duration table
+- **Carbon type**: date range / vehicle filters → Vehicle, Date, Distance, Fuel, MPG, CO₂ table
+- **Speeding type**: date range / vehicle / driver filters → Vehicle, Driver, Date, Time, Max Speed, Distance table
+- **Fuel Economy**: date range / vehicle filters → Vehicle, Date, Time, Distance, Fuel, MPG table
+- (Maintenance Upcoming / Maintenance Spend drill-downs no longer reachable — options removed)
+- **Export options** (enabled after data loads): Excel (.xlsx) two-tab workbook + PDF with blue header, KPI boxes, AutoTable, "Confidential" footer
+
+---
+
+## Design decisions & philosophy
+
+### Colour palette (Geotab-aligned)
+```
+--accent:       #0078D4   (Geotab blue)
+--accent-dark:  #005A9E
+--accent-dim:   #E8F4FD
+--critical:     #DC2626   (red)
+--warning:      #D97706   (amber)
+--low:          #059669   (green)
+```
+
+### Target customer
+Small-to-mid fleet customers (Verizon Connect migration context).
+**Key product philosophy**: These customers have no BI tools, no data analysts.
+The add-in must do the interpretation work FOR them.
+- Always show vehicle names, never device IDs
+- Always show readable dates/times, never ISO strings
+- PDF and Excel exports are formatted REPORTS, not raw data dumps
+- Two layers: summary (at a glance) → detail (on demand, via drill-down)
+- CSV intentionally excluded — it serves data pipeline use cases, not this audience
+
+---
+
+## Maintenance data constraint (why the two maintenance reports were removed)
+Investigated 2026-07 against live DB `TRAI02`:
+- MyGeotab's classic SDK has **no** `WorkOrder`, `MaintenanceReminder`, or
+  `MaintenanceRecord` entity/method. The old code called `Get typeName:"MaintenanceReminder"`,
+  which does not exist — so those reports never returned data on any real DB.
+- **Work Order Management** is a next-gen (GreatLakes) first-party app
+  (`solutionId: geotabWorkOrderManagement`, `app.geotab.com/apps/maintenance-work-request`,
+  appMenuId `maintenanceWorkRequest`). Its records live in a next-gen maintenance
+  service, not in classic `AddInData`. Querying `AddInData` as a normal user returns
+  only UI/map-view prefs — the work order records are not exposed to a classic add-in
+  via `api.call("Get", ...)`, GetFeed, or MultiCall.
+- **Conclusion**: a classic add-in cannot read Work Order Management data today.
+  Both maintenance widget/report options were removed (handler functions retained as
+  dead code in app.js for quick restore). Revisit if Geotab ships a public Maintenance
+  Center API. Proper support would warrant its own dedicated page — out of scope for
+  the current (12-unit) customer.
+
+## Known placeholders / next logical features
+- Reports tab: Exceptions and Fuel reports marked `disabled` / "coming soon"
+- Drill-down filters currently filter client-side after fetching all events for the date range
+- Driver map (`state.driverMap`) is populated from `User` fetch but display name logic may need refinement depending on how driver names are stored in the customer's database
+- The health score formula is simple (violations / devices / 50 * 100) — could be refined with weightings per severity
+
+---
+
+## API calls in use
+All via `state.api.call(method, params, onSuccess, onError)` and `state.api.multiCall`.
+```
+Get → Device         (device list / names)
+Get → User           (driver list for drill-down filter)
+Get → Rule           (exception rule list + map rule filter; names cached in state.ruleNameMap)
+Get → ExceptionEvent (violations — current/previous period, widget data, drill-down, map)
+Get → Trip           (reports tab, speeding/carbon/fuel widgets)
+Get → LogRecord      (GPS correlation for the map — batched via multiCall, 50/batch)
+GetAddresses         (reverse geocode Trip.stopPoint coordinates for Legacy Trip
+                       History Report; official MyGeotab API, not a third-party
+                       geocoder — see v2.7.0 changelog)
+Add/Set/Get → AddInData (dashboard layout persistence; addInId "SmartInsightsDashboard")
+```
+**Map data constraint**: ExceptionEvent/Trip carry NO coordinates. The map correlates
+each event to the vehicle's GPS trail by querying LogRecord for that device in a ±3 min
+window around the event time and taking the nearest point. Capped at 500 most-recent
+events (`MAP_EVENT_CAP`), batched 50 per multiCall.
+
+---
+
+## Repo / deployment
+- GitHub repo: bjornvandenwijngaert-tech/smart-insights
+- Deployed via GitHub Pages
+- **Push is done MANUALLY by Bjorn** each time a new version is created. GIA does not
+  push; just tell GIA when a push has been done so context stays accurate. (This local
+  folder has no git remote configured — the push happens outside it.)
+- config.json points directly to the Pages URL
+- Cache-bust: all asset URLs include a `?v=X.Y.Z` query string — **increment on each release**
+  (this maintenance-removal change needs a version bump + cache-bust before it takes effect)

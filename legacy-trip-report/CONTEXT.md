@@ -2,7 +2,7 @@
 
 ## What this is
 A **single-purpose** MyGeotab add-in that produces one thing: the Legacy Trip
-History Report (a classic per-vehicle/per-day trip log with reverse-geocoded
+History Report (a classic per-vehicle/per-driver/per-day trip log with reverse-geocoded
 stop addresses, CSV + branded PDF export). It is a self-contained extraction of
 the Legacy Trip History feature from the parent **Smart Insights** add-in (one
 level up), created so the report can be pitched to Geotab and installed on its
@@ -41,17 +41,36 @@ legacy-trip-report/
 
 ## How the report works
 1. Fetch `Device` (name map) + `Trip` for the selected range.
-2. Group trips by device, sorted chronologically; split into per-day blocks.
-3. Reverse-geocode every unique `Trip.stopPoint` via MyGeotab's **`GetAddresses`**
+2. Resolve each unique historical `Trip.driver.id` with `Get User`, using
+   `UserSearch.userIds` in batches of 100. Do not filter to currently active users
+   or currently enabled drivers; archived users may own trips in this range.
+3. Group by `Device.id`, then driver identity, then local day. Device names are
+   display labels only. Build the chronological vehicle timeline before grouping,
+   so start locations and overnight detection still use the actual prior trip.
+4. Reverse-geocode every unique `Trip.stopPoint` via MyGeotab's **`GetAddresses`**
    method (coordinates never leave Geotab; deduped to ~1m precision; batched up
    to 400/call under the 450/min limit). No third-party geocoder.
-4. Render per-vehicle/per-day tables: "Starting from" lead-in, "(Ignition On)"
+5. Render per-vehicle/per-driver/per-day tables: "Starting from" lead-in, "(Ignition On)"
    marker, trip rows, daily total. KPIs across the whole range.
-5. Export CSV (flat) or branded PDF (Geotab logo, navy header, KPI grid,
-   per-day tables).
+6. Export CSV (one trip per row, with that trip's singular `Driver`) or branded
+   PDF (Geotab logo, navy header, KPI grid, vehicle/driver/day sections). PDF table
+   headers repeat the vehicle, driver and date on continuation pages.
 
 Length selector (Daily / Weekly / Monthly / Custom) auto-fills the from/to date
 inputs; Custom leaves them for manual entry. Optional vehicle filter.
+
+## Current version: v1.3.0
+
+- Driver names now come from the `User` referenced by each trip, not the
+  non-standard `Trip.driverName` field or the asset's current driver.
+- Unknown/unassigned trips have their own section. A known driver id whose name
+  cannot be read is labelled `Driver name unavailable (...)`, not unassigned.
+- Grouping is by driver id, so different users with the same display name remain
+  separate. Their login/id disambiguates their headings when necessary.
+- Vehicle filtering now updates summary cards as well as tables and exports.
+- Date inputs use local calendar dates, avoiding UTC/BST preset shifts.
+- Regression checks: `node --test tests/trip-report-drivers.test.cjs` from the
+  repository root. Tests cover both standalone reports and both parent reports.
 
 ---
 
@@ -65,6 +84,10 @@ formally split into separate repos. Functions kept in sync include:
 `exportLegacyTripHistoryPdf`, `drawPdfHeaderLogo`, `localDayKey`,
 `buildLegacyStopInfo`, `legacyStopMins`, `OVERNIGHT_MIN_HOURS`,
 `resolveHost`, `cardDatePart`, `tripHistoryUrl`, `tripHistoryCell`, `esc`.
+The historical driver helpers (`reportDriverId`, `isUnassignedDriver`,
+`reportUserName`, `reportDriverInfo`, `resolveReportDrivers`,
+`groupReportDriverDays`) are also copied into the standalone Activity Report.
+Keep those three copies identical; the regression suite checks this.
 
 **`esc()` must escape single quotes.** Every attribute here is written with
 single-quoted delimiters and the rison Trip History URLs quote their dates with
@@ -126,6 +149,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.1.0` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.3.0` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Push is manual (same workflow as the parent app).
