@@ -1,13 +1,13 @@
 {
-  "name": "Smart Insights",
+  "name": "Legacy Trip History",
   "supportEmail": "bjornvandenwijngaert@geotabsmb.com",
-  "version": "1.0.1",
+  "version": "1.3.0",
   "items": [
     {
-      "url": "https://bjornvandenwijngaert-tech.github.io/smart-insights/index.html",
+      "url": "https://bjornvandenwijngaert-tech.github.io/smart-insights/legacy-trip-report/index.html",
       "path": "ActivityLink/",
       "menuName": {
-        "en": "Smart Insights"
+        "en": "Legacy Trip History"
       },
       "icon": ""
     }

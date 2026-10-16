@@ -1316,3 +1316,17 @@ body.edit-mode-active {
   text-align: right;
   white-space: nowrap;
 }
+
+/* Trip reports: asset -> historical driver -> local day. */
+.report-vehicle-group { margin-bottom: 24px; }
+.report-vehicle-group > h3 { margin-bottom: 8px; }
+.report-driver-group {
+  margin-top: 12px;
+  padding-left: 12px;
+  border-left: 3px solid var(--accent-mid);
+}
+.report-driver-group > h4 {
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: var(--accent-dark);
+}
