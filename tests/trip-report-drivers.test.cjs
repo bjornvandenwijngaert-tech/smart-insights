@@ -422,6 +422,14 @@ for (const variant of variants.filter(v => !v.legacy)) {
       await app.hooks.exportActivityExcel(); const ws = app.workbooks[0].worksheets[1];
       assert.deepEqual(ws.rows[0].values.slice(0, headers.length), headers, "Excel headers mask " + mask);
       assert.equal(ws.rowCount, 6); assert(ws.rows.slice(1).every(row => !row.hidden && row.outlineLevel <= 1));
+      assert(ws.rows[0].font.bold, "Keep the Excel header bold");
+      for (const row of ws.rows.slice(1)) {
+        assert.equal(row.font.bold, row.outlineLevel === 0, "Only vehicle-total data rows are bold, mask " + mask);
+        for (let c = 1; c <= headers.length; c++) {
+          const font = row.getCell(c).font || row.font;
+          assert.equal(font.bold, row.outlineLevel === 0, "Effective cell weight, mask " + mask + ", row " + row.number + ", column " + c);
+        }
+      }
       assert.equal(ws.columns.length, headers.length + 2); assert(ws.columns.slice(-2).every(column => column.hidden));
       headers.slice(6).forEach((header, i) => {
         const column = i + 7, value = ws.rows[1].values[column - 1], numeric = value && value.formula ? value.result : value;

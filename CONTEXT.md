@@ -35,9 +35,15 @@ smart-insights/
 
 ---
 
-## Current version: v2.12.2
+## Current version: v2.12.3
 
 ### Changelog since v2.2.0
+- **v2.12.3** — Activity Report daily data rows are plain; only
+  vehicle-total data rows are bold in the add-in and Excel. Existing bold Excel
+  headers remain. No changes to reporting selectors, daily grouping or formulas.
+  Clarified that first fetched origins lack predecessor context rather than
+  proving a source GPS gap. Live demo/native Trips History validation is pending
+  confirmed database access. Standalone Activity Report v1.3.3.
 - **v2.12.2** — Restore the Activity Report's original Engine On
   (total), Driving Time, Idle Time and Work/After-hours selectors. Their removal
   in v2.12.1 was an incorrect assumption during daily-only cleanup. One shared

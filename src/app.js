@@ -1090,8 +1090,9 @@ function formatReverseGeocodeAddress(addr) {
 }
 
 // Where a trip began. Trip has no startPoint — a vehicle starts where it last
-// stopped, so the previous trip's stopPoint is the start location. The first trip
-// of the fetched range has no predecessor and is genuinely unknown.
+// stopped, so we infer the start location from the previous trip's stopPoint.
+// The first fetched trip has no predecessor in this result; an earlier trip may
+// exist outside the query window. "Unknown" here does not establish a GPS gap.
 function startAddressForRow(row, addrMap) {
   return addressForPoint(row.prevTrip ? row.prevTrip.stopPoint : null, addrMap);
 }
@@ -1862,7 +1863,6 @@ function addActivityGroupedWorksheet(wb, byDevice, addrMap, cols) {
     row.getCell(5).numFmt = "hh:mm";
     for (var c = 7; c <= headers.length; c++) {
       row.getCell(c).numFmt = columns[c - 7].format;
-      if (level === 1) row.getCell(c).font = { name: "Arial", size: 11, bold: true };
     }
     return row;
   }

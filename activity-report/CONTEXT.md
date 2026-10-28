@@ -65,8 +65,10 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
   `SystemSettings.measurementSystem` (database-wide, so it can disagree with the
   user's own profile — it's a last resort, not the source of truth).
 - **A trip has no `startPoint`.** A vehicle starts where it last stopped, so the
-  Start Location column comes from the *previous* trip's `stopPoint`. The first
-  trip of the fetched range genuinely has no origin and shows "(location unknown)".
+  Start Location is inferred from the *previous* fetched trip's `stopPoint`. The
+  first fetched trip per vehicle has no predecessor in this result and shows
+  "(location unknown)" even if an earlier trip outside the query has coordinates.
+  This is a lookup-context limitation, not evidence of missing source GPS.
 - **Addresses** are resolved with MyGeotab's own `GetAddresses` — coordinates never
   leave Geotab's infrastructure. Deduped to ~1m via `coordKey()` and chunked 400 per
   call to stay under the 450/min limit. Failures fall back to raw coordinates.
@@ -92,6 +94,9 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
   Hours/stop/idle/driving/work figures use decimal hours; selected engine-on,
   driving-only and idle-only reporting columns use `[h]:mm`;
   distance follows the user's profile. Excel dates/times are native date values.
+- **Row emphasis:** daily data is plain; only vehicle-total data rows are bold.
+  Excel's column header retains its existing bold blue style. This applies to
+  every reporting-selector combination.
 - **Excel formulas:** daily metrics are the aggregated source facts. Daily elapsed
   hours use `24*(day end UTC - day start UTC)`; engine-on uses `(idle + driving)/24`.
   Vehicle totals SUM only the contiguous daily rows. Two hidden columns hold each
@@ -122,10 +127,43 @@ the Legacy Trip History standalone add-in. The regression suite checks this.
 
 ## Version
 
-v1.3.2 — restore all four engine reporting selectors removed by
-mistake in v1.3.1. Selected daily-summary columns are consistent across HTML,
-CSV, PDF and Excel, including saved preferences. No trip itemisation is added.
-Mirrored to Smart Insights v2.12.2.
+v1.3.3 — daily rows plain and vehicle-total rows bold in HTML/Excel.
+Reporting selectors, daily-only grain and calculations retain their contracts.
+Mirrored to Smart Insights v2.12.3.
+
+## Data validation status — 28 October 2026
+
+Automated/synthetic fixtures, actual browser rendering and desktop Excel checks
+verify implementation, formulas, selector combinations and formatting. They do
+not establish parity with this user's live demo data or native Trips History.
+The live demo database, request window, browser timezone and units were identified.
+The report includes complete overnight trips attributed to their local start day.
+The logged-in MyGeotab profile timezone and unrounded Trip/native-export data
+still need verification. Do not infer profile timezone from a database name or
+addresses. Case-specific source observations are kept in private scratch notes,
+not in this public-hosting repository.
+
+The browser pairing was repaired and the live add-in was observed, but subsequent
+source reads failed with disconnections/timeouts; CLI credential import also
+failed. The existing CLI session was expired and pointed elsewhere. Native Trips
+History/source parity was not completed and was deferred by the user. Resume
+with a stable signed-in connection or the Activity workbook plus native Trips
+History export for the same window, vehicles and units.
+
+Known location semantics: the app produces "(location unknown)" for an absent or
+incomplete endpoint coordinate; valid coordinates with a failed GetAddresses
+lookup fall back to latitude/longitude. First fetched starts lack predecessor
+context. Unknown final locations require checking that final Trip.stopPoint.
+
+Review also needs whole overlapping/overnight trips, post-trip stop attribution,
+rounding, browser-local dates versus MyGeotab profile timezone, derived engine-on
+versus the cumulative engineHours field, and whether work-idling fields actually
+exist in the database's Trip responses. Do not claim source/native parity until
+those live comparisons have been performed. No data-fetch behavior changed for
+the row-emphasis correction.
+
+Displayed-number spot checks are not source validation: sums of rounded daily
+values may differ from a vehicle total calculated from full-precision values.
 
 Regression checks: `node --test tests/trip-report-drivers.test.cjs` from the repo root.
 

@@ -24,8 +24,8 @@
   font-size: 11px;
   font-weight: 400;
 }
-.activity-day-row { position: relative; border-bottom: 1px solid var(--border); }
-.activity-number { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.activity-day-row { position: relative; border-bottom: 1px solid var(--border); font-weight: 400; }
+.activity-number { text-align: right; font-weight: inherit; font-variant-numeric: tabular-nums; }
 .activity-text { font-weight: 400; }
 .activity-vehicle-total { background: var(--accent-dim); border-top: 1px solid var(--border); font-weight: 700; }
 .activity-total-label { grid-column: span 5; }
