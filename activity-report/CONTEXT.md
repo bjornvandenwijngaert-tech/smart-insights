@@ -4,7 +4,7 @@ A self-contained MyGeotab add-in containing only the Activity Report. It is a li
 of the Activity Report functions from the parent Smart Insights `src/app.js`, so it
 can be installed on its own by customers who don't want the full dashboard.
 
-The report is grouped as **vehicle -> local start day -> optional trip detail**.
+The report is grouped as **vehicle -> local start day totals only**.
 Each day combines every trip for that vehicle, regardless of driver allocation.
 There are no driver or week sections, and Activity does not resolve driver users.
 Vehicle grouping uses stable device ids, not display names.
@@ -75,8 +75,8 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
 - **Driver handovers:** days use the whole chronological vehicle timeline.
   Retain every row's original `prevTrip` through handovers and across days.
 - **Preview:** each vehicle has a horizontal daily table and one selected-period
-  total row underneath. All daily summaries are visible; native `details` expands
-  an individual day's trips. No fleet cards, driver/week folds or driver labels.
+  total row underneath. Exactly one row per vehicle/day; no trip itemisation,
+  disclosure controls, hidden detail, fleet cards or driver/week folds.
 - **Daily endpoints:** earliest trip start and its actual predecessor location,
   latest trip stop and its location. Times use 24-hour `hh:mm`; dates `dd/mm/yyyy`.
 - **Total Hours:** first departure to latest arrival, using actual elapsed UTC
@@ -85,17 +85,21 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
   local start day. Stop duration remains the raw post-trip duration, which can
   include overnight parking; engine-on remains driving + idle.
 - **Exports:** CSV/PDF contain daily rows and one vehicle footer, no driver column.
-  Excel opens on Activity Report with those same daily rows visible, raw trip
-  rows hidden underneath, and vehicle totals below. Outline levels are vehicle /
-  day / trip (1/2/3). The previous Summary/chart remains a secondary worksheet.
+  Excel opens on Activity Report with those same daily rows and vehicle totals
+  below. No individual-trip rows exist anywhere in the workbook, including hidden
+  rows or sheets. Outline levels are vehicle / day (1/2), initially expanded.
+  The previous vehicle Summary/chart remains a secondary worksheet.
   Hours/stop/idle/driving/work figures use decimal hours; engine-on uses `[h]:mm`;
   distance follows the user's profile. Excel dates/times are native date values.
-- **Excel formulas:** other metric totals use `SUBTOTAL(9,...)` over raw descendants.
-  Daily elapsed hours use `24*(MAX(end UTC)-MIN(start UTC))`; vehicle elapsed hours
-  use SUMIF on daily rows only. Three hidden helper columns retain raw UTC trip
-  starts, UTC stops and row type so DST stays correct without double-counting.
-  Per-row `collapsed` overrides ExcelJS 4.4's sheet-wide getter: days start
-  collapsed, vehicles start expanded. Verify OOXML and desktop Excel on upgrades.
+- **Excel formulas:** daily metrics are the aggregated source facts. Daily elapsed
+  hours use `24*(day end UTC - day start UTC)`; engine-on uses `(idle + driving)/24`.
+  Vehicle totals SUM only the contiguous daily rows. Two hidden columns hold each
+  day's first departure and final arrival in UTC, not individual-trip data, so
+  overnight/DST remains correct. All exported rows are visible initially, and
+  only vehicle groups can collapse. Verify OOXML and Excel on library upgrades.
+- **Column controls:** only Work/After-hours is optional. Driving, idle and engine
+  are always part of the daily summary; obsolete trip-only checkbox settings are
+  ignored when restoring older saved preferences.
 - **Filtering:** vehicle filters update every scoped summary and export.
 - **Result snapshot:** starting a run clears previous exportable Activity data and
   hides exports. Publish trips, groups, addresses and `activityRange` together
@@ -112,10 +116,9 @@ the Legacy Trip History standalone add-in. The regression suite checks this.
 
 ## Version
 
-v1.3.0 — clean vehicle/day layout with a horizontal row per day and
-one vehicle-period footer; no driver allocation or intermediate weekly totals.
-Expandable trip detail, matching CSV/PDF, and Excel daily summaries visible by
-default. Completed-range export locking retained. Mirrored to Smart Insights v2.12.0.
+v1.3.1 — remove all remaining trip itemisation, including hidden Excel
+rows and on-screen day expansion. Exactly one vehicle/day row and one vehicle
+footer, with matching CSV/PDF output. Mirrored to Smart Insights v2.12.1.
 
 Regression checks: `node --test tests/trip-report-drivers.test.cjs` from the repo root.
 

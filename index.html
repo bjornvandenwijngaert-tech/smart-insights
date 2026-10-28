@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Smart Insights</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-  <link rel="stylesheet" href="src/styles.css?v=2.12.0" />
-  <link rel="stylesheet" href="activity-report/src/activity.css?v=2.12.0" />
+  <link rel="stylesheet" href="src/styles.css?v=2.12.1" />
+  <link rel="stylesheet" href="activity-report/src/activity.css?v=2.12.1" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -39,7 +39,7 @@
       </nav>
       <div class="header-meta">
         <span id="db-name" class="db-badge"></span>
-        <span class="version-badge">v2.12.0</span>
+        <span class="version-badge">v2.12.1</span>
       </div>
     </header>
 
@@ -89,9 +89,6 @@
               <option value="custom">Custom range</option>
             </select>
             <div id="activity-cols-wrap" class="hidden" style="display:inline-flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;margin-left:4px">
-              <label style="cursor:pointer;user-select:none"><input type="checkbox" id="col-total-engine" checked> Engine On (total)</label>
-              <label style="cursor:pointer;user-select:none"><input type="checkbox" id="col-drive-only"> Driving Time</label>
-              <label style="cursor:pointer;user-select:none"><input type="checkbox" id="col-idle-only"> Idle Time</label>
               <label style="cursor:pointer;user-select:none"><input type="checkbox" id="col-work-split"> Work / After-hours</label>
             </div>
             <input type="date" id="filter-from" class="input-date" />
@@ -278,7 +275,7 @@
 
   </div>
 
-  <script src="src/logo-data.js?v=2.12.0"></script>
-  <script src="src/app.js?v=2.12.0"></script>
+  <script src="src/logo-data.js?v=2.12.1"></script>
+  <script src="src/app.js?v=2.12.1"></script>
 </body>
 </html>

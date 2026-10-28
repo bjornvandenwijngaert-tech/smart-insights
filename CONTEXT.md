@@ -35,9 +35,15 @@ smart-insights/
 
 ---
 
-## Current version: v2.12.0
+## Current version: v2.12.1
 
 ### Changelog since v2.2.0
+- **v2.12.1** — Activity Report is daily totals only: exactly one
+  row per vehicle/day and one vehicle-period total. Removed on-screen expansion
+  and all individual-trip rows from Excel, including hidden rows. Excel has only
+  vehicle/day outline levels, daily UTC endpoints, and SUM vehicle totals. Removed
+  obsolete trip-detail column controls; Work/After-hours remains optional. Legacy
+  Trip History is unchanged. Standalone Activity Report v1.3.1.
 - **v2.12.0** — Activity Report now has a clean vehicle/day layout:
   one horizontal daily summary combining all drivers, a selected-period vehicle
   footer underneath, and optional trip detail. No driver/week headings or fleet
