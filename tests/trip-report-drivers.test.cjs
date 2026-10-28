@@ -80,7 +80,20 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
     constructor() { this.worksheets = []; this.xlsx = { writeBuffer: () => Promise.resolve(new Uint8Array([1])) }; workbooks.push(this); }
     addWorksheet(name) {
       assert(!this.worksheets.some(ws => ws.name === name), "Duplicate worksheet name");
-      const ws = { name, rows: [], addRow(values) { const row = { values: Array.from(values) }; this.rows.push(row); return row; }, addImage() {} };
+      const ws = { name, rows: [], properties: {}, get rowCount() { return this.rows.length; }, addRow(values) {
+        const number = this.rows.length + 1;
+        const row = { values: Array.from(values), cells: {}, getCell(column) {
+          if (!this.cells[column]) {
+            let n = column, letter = "";
+            while (n) { letter = String.fromCharCode(65 + (n - 1) % 26) + letter; n = Math.floor((n - 1) / 26); }
+            const cell = { address: letter + number };
+            Object.defineProperty(cell, "value", { get: () => this.values[column - 1], set: value => { this.values[column - 1] = value; } });
+            this.cells[column] = cell;
+          }
+          return this.cells[column];
+        } };
+        this.rows.push(row); return row;
+      }, addImage() {} };
       this.worksheets.push(ws); return ws;
     }
     addImage() { return 1; }
@@ -93,7 +106,7 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
     alert(message) { throw new Error(message); },
     document: {
       getElementById: element,
-      createElement(tag) { return tag === "canvas" ? { getContext() { return {}; }, toDataURL() { return "data:image/png;base64,test"; } } : { click() {} }; }
+      createElement(tag) { return tag === "canvas" ? { getContext() { return {}; }, toDataURL() { return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="; } } : { click() {} }; }
     },
     jspdf: { jsPDF: FakePdf }, ExcelJS: { Workbook: FakeWorkbook },
     Chart: function () { this.destroy = function () {}; }
@@ -103,7 +116,7 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
   let source = fs.readFileSync(path.join(root, variant.file), "utf8");
   if (variant.privateScope) {
     assert(/\}\)\(\);\s*$/.test(source));
-    source = source.replace(/\}\)\(\);\s*$/, "globalThis.reportTestHooks = {state, runActivityReport, filterReportByVehicle, exportActivityCsv, exportActivityPdf, exportActivityExcel, reportDriverId, isUnassignedDriver, reportUserName, reportDriverInfo, resolveReportDrivers, groupReportDriverDays, buildByDevice, buildDayBlocks, fmtDateInput, applyRangeLength, localDayKey};\n})();");
+    source = source.replace(/\}\)\(\);\s*$/, "globalThis.reportTestHooks = {state, runActivityReport, filterReportByVehicle, exportActivityCsv, exportActivityPdf, exportActivityExcel, reportDriverId, isUnassignedDriver, reportUserName, reportDriverInfo, resolveReportDrivers, groupReportDriverDays, buildByDevice, buildDayBlocks, fmtDateInput, applyRangeLength, localDayKey, activityVehicleIds, activityFoldSummary, renderActivityReport, addActivityGroupedWorksheet};\n})();");
   }
   vm.runInContext(source, context, { filename: variant.file });
   const hooks = variant.privateScope ? context.reportTestHooks : context;
@@ -120,7 +133,7 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
   hooks.state.server = "my.geotab.com";
   hooks.state.dbName = "demo";
   hooks.state.unitSystem = "Metric";
-  return { hooks, elements, calls, downloads, pdfs, workbooks, data };
+  return { hooks, elements, calls, downloads, pdfs, workbooks, data, context };
 }
 
 function runReport(app, variant) {
@@ -244,19 +257,47 @@ for (const variant of variants) {
     assert.equal(byDevice.bVan.driverGroups[0].days[0].date, "2026-07-01");
   });
 
-  if (!variant.legacy) test(variant.label + ": Excel has driver sections and a driver on every trip row", async () => {
+  if (!variant.legacy) test(variant.label + ": Excel groups all vehicles with driver/day outlines and numeric subtotals", async () => {
     const app = loadApp(variant); runReport(app, variant);
     app.hooks.exportActivityExcel();
     await Promise.resolve();
     const workbook = app.workbooks[0];
-    assert.equal(workbook.worksheets.length, 3);
-    const sheet = workbook.worksheets.find(ws => ws.name === "Vehicle One - TEST01");
-    assert.equal(sheet.rows.filter(r => String(r.values[0]).startsWith("Driver: ")).length, 3);
-    assert.equal(sheet.rows.filter(r => r.values[0] === "Driver" && r.values[1] === "Start Time").length, 4);
-    const trips = sheet.rows.filter(r => r.values.length > 7 && !String(r.values[1]).includes("Total") && r.values[1] !== "Start Time" && r.values[2] !== "(Ignition On)");
-    assert.equal(trips.length, 5);
-    assert.equal(trips.filter(r => r.values[0] === "Alex Example").length, 2);
-    assert.equal(trips.find(r => r.values[4] === "Stop 3").values[2], "Stop 2");
+    assert.deepEqual(workbook.worksheets.map(ws => ws.name), ["Summary", "Activity Report"]);
+    const sheet = workbook.worksheets[1];
+    const trips = sheet.rows.filter(r => r.outlineLevel === 3);
+    assert.equal(trips.length, 6);
+    assert.equal(trips.filter(r => r.values[6] === "Alex Example").length, 3);
+    assert.equal(trips.find(r => r.values[5] === "Stop 3").values[3], "Stop 2");
+    assert.equal(trips[0].values[1], "2026-10-12");
+    assert.equal(trips[0].values[7], 10);
+    assert.equal(trips[0].values[8], 1 / 24);
+    assert.equal(sheet.rows.filter(r => r.outlineLevel === 2).length, 5);
+    assert.equal(sheet.rows.filter(r => r.outlineLevel === 1).length, 4);
+    assert.equal(sheet.properties.outlineLevelRow, 3);
+    assert.equal(sheet.properties.outlineProperties.summaryBelow, true);
+    assert.equal(sheet.views[0].ySplit, 1);
+    assert.equal(sheet.views[0].showOutlineSymbols, true);
+    const visible = sheet.rows.slice(1).filter(r => !r.hidden);
+    assert.deepEqual(visible.map(r => r.values[0]), ["Vehicle One - TEST01 Total", "Vehicle Two - TEST02 Total"]);
+    assert(visible.every(r => r.collapsed && r.font.bold));
+    assert(trips.every(r => r.hidden && !r.collapsed));
+    assert.equal(visible[0].values[7].result, 105);
+    // Independently evaluate SUBTOTAL's promise: only numeric leaves count,
+    // even when descendant subtotal rows occur inside the range.
+    sheet.rows.forEach((row, index) => {
+      for (let c = 8; c <= row.values.length; c++) {
+        const value = row.values[c - 1];
+        if (!value || !value.formula) continue;
+        const match = /^SUBTOTAL\(9,([A-Z]+)(\d+):\1(\d+)\)$/.exec(value.formula);
+        assert(match, value.formula);
+        const first = Number(match[2]), last = Number(match[3]);
+        assert(first <= last && last < index + 1);
+        const numeric = sheet.rows.slice(first - 1, last).map(r => r.values[c - 1]).filter(v => typeof v === "number");
+        const expected = numeric.reduce((a, b) => a + b, 0);
+        assert(Math.abs(value.result - expected) < 1e-10, value.formula);
+        assert.equal(row.getCell(c).numFmt, c === 8 ? "0.00" : "[h]:mm:ss");
+      }
+    });
   });
 
   if (!variant.legacy) test(variant.label + ": identically named assets remain separate in Excel", async () => {
@@ -266,7 +307,50 @@ for (const variant of variants) {
     assert.equal(Object.keys(byDevice).length, 2);
     app.hooks.exportActivityExcel();
     await Promise.resolve();
-    assert.deepEqual(app.workbooks[0].worksheets.map(ws => ws.name), ["Summary", "Vehicle One - TEST01", "Vehicle One - TEST01 (2)"]);
+    const totals = app.workbooks[0].worksheets[1].rows.filter(r => r.outlineLevel === 0);
+    assert.equal(totals.length, 2);
+    assert.deepEqual(totals.map(r => r.values[7].result), [5, 105]);
+  });
+
+  if (!variant.legacy) test(variant.label + ": collapsed preview retains sorted vehicles, historical drivers and all days", () => {
+    const data = fixture(); data.devices.reverse(); data.trips.reverse();
+    const app = loadApp(variant, data); runReport(app, variant);
+    const html = app.elements["report-output"].innerHTML;
+    assert.equal((html.match(/class='activity-fold activity-vehicle-fold'/g) || []).length, 2);
+    assert.equal((html.match(/class='activity-fold activity-driver-fold'/g) || []).length, 4);
+    assert.equal((html.match(/class='activity-fold activity-day-fold'/g) || []).length, 5);
+    assert(!/<details[^>]*\bopen\b/.test(html));
+    assert(html.indexOf("Vehicle One") < html.indexOf("Vehicle Two"));
+    assert(html.includes("2 days · 5 stops · 105.00 km"));
+    assert(html.includes("Stop 2"));
+  });
+
+  if (!variant.legacy) test(variant.label + ": Excel respects filtering, units, optional columns and durations over 24 hours", async () => {
+    const data = fixture();
+    data.trips[0].drivingDuration = "1.02:00:00";
+    data.trips[0].workDrivingDuration = "01:30:00";
+    data.trips[0].workIdlingDuration = "00:15:00";
+    data.trips[0].afterHoursDrivingDuration = "00:30:00";
+    data.trips[0].afterHoursIdlingDuration = "00:05:00";
+    data.trips[1].drivingDuration = null; // timestamp fallback
+    const app = loadApp(variant, data); runReport(app, variant);
+    app.hooks.state.unitSystem = "Imperial";
+    for (const id of ["total-engine", "drive-only", "idle-only", "work-split"]) app.elements["col-" + id] = { checked: true };
+    app.hooks.filterReportByVehicle("bVan");
+    app.hooks.exportActivityExcel(); await Promise.resolve();
+    const sheet = app.workbooks[0].worksheets[1];
+    assert.equal(sheet.rows[0].values[7], "Distance (mi)");
+    assert.equal(sheet.rows[0].values.length, 16);
+    assert.equal(sheet.rows.filter(r => r.outlineLevel === 3).length, 5);
+    const total = sheet.rows.at(-1);
+    assert.equal(total.values[7].result, 105 * 0.621371);
+    assert(Math.abs(total.values[8].result - 30 / 24) < 1e-10);
+    assert(Math.abs(total.values[14].result - 105 / 1440) < 1e-10);
+    assert(Math.abs(total.values[15].result - 35 / 1440) < 1e-10);
+    assert.equal(total.getCell(9).numFmt, "[h]:mm:ss");
+    for (const id of ["total-engine", "drive-only", "idle-only", "work-split"]) app.elements["col-" + id].checked = false;
+    app.hooks.exportActivityExcel(); await Promise.resolve();
+    assert.equal(app.workbooks[1].worksheets[1].rows[0].values.length, 11);
   });
 }
 
@@ -279,8 +363,15 @@ test("driver lookup is batched by unique ids and helper copies stay synchronized
   assert.deepEqual(app.calls.map(c => c.params.search.userIds.length), [100, 100, 1]);
   const copies = [variants[0], variants[1], variants[3]].map(v => loadApp(v).hooks);
   for (const name of ["reportDriverId", "isUnassignedDriver", "reportUserName", "reportDriverInfo", "resolveReportDrivers", "groupReportDriverDays"]) {
-    assert.equal(copies[0][name].toString(), copies[1][name].toString(), name);
-    assert.equal(copies[0][name].toString(), copies[2][name].toString(), name);
+    assert.equal(copies[0][name].toString().replace(/\r\n/g, "\n"), copies[1][name].toString().replace(/\r\n/g, "\n"), name);
+    assert.equal(copies[0][name].toString().replace(/\r\n/g, "\n"), copies[2][name].toString().replace(/\r\n/g, "\n"), name);
+  }
+});
+
+test("Activity preview and grouped worksheet helpers stay synchronized with the parent", () => {
+  const parent = loadApp(variants[2]).hooks, standalone = loadApp(variants[3]).hooks;
+  for (const name of ["activityVehicleIds", "activityFoldSummary", "renderActivityReport", "addActivityGroupedWorksheet"]) {
+    assert.equal(parent[name].toString().replace(/\r\n/g, "\n"), standalone[name].toString().replace(/\r\n/g, "\n"), name);
   }
 });
 

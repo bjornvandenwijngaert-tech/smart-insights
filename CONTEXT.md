@@ -35,9 +35,17 @@ smart-insights/
 
 ---
 
-## Current version: v2.10.0
+## Current version: v2.11.0
 
 ### Changelog since v2.2.0
+- **v2.11.0** — Activity Report preview uses collapsed vehicle/driver/day folds,
+  matching Vehicle Activity Log's summary-first disclosure style. Excel retains
+  the Summary/chart and combines all filtered vehicles on one Activity Report
+  worksheet with nested outlines and bold vehicle totals visible initially.
+  Day, driver and vehicle totals are numeric SUBTOTAL formulas; durations use
+  `[h]:mm:ss`. Historical drivers and cross-driver start locations are preserved.
+  Shared scoped CSS lives in `activity-report/src/activity.css`. Mirrored to the
+  standalone Activity Report v1.2.0. Run `node --test tests/trip-report-drivers.test.cjs`.
 - **v2.10.0** — Historical drivers in Legacy Trip History and Activity Report.
   Resolve the unique `Trip.driver.id` references through `Get User` with
   `UserSearch.userIds` (100 ids per batch, without active-user/driver-only

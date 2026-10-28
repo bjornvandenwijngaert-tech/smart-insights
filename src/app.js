@@ -1458,10 +1458,32 @@ function runActivityReport(from, to, done) {
   }, function (err) { reportError(err); done(); });
 }
 
+function activityVehicleIds(byDevice) {
+  return Object.keys(byDevice).sort(function (a, b) {
+    return byDevice[a].name.localeCompare(byDevice[b].name) || a.localeCompare(b);
+  });
+}
+
+function activityFoldSummary(label, trips) {
+  var days = {}, km = 0, drive = 0, idle = 0;
+  trips.forEach(function (t) {
+    days[localDayKey(t.start)] = true;
+    km += t.distance || 0;
+    var mins = parseDurationToMins(t.drivingDuration);
+    drive += mins != null ? mins : durationMins(t.start, t.stop);
+    idle += parseDurationToMins(t.idlingDuration) || 0;
+  });
+  var count = Object.keys(days).length;
+  var meta = count + (count === 1 ? " day" : " days") + " · " + trips.length + " stops · "
+    + fmtActivityDistance(km) + " · " + fmtDurWhole(drive) + " driving · " + fmtDurWhole(idle) + " idling";
+  return "<summary class='activity-fold-summary'><span class='activity-fold-label'>" + esc(label)
+    + "</span><span class='activity-fold-meta'>" + esc(meta) + "</span></summary>";
+}
+
 function renderActivityReport(byDevice, addrMap) {
   var cols   = getActivityCols();
   var output = document.getElementById("report-output");
-  var vids   = Object.keys(byDevice);
+  var vids   = activityVehicleIds(byDevice);
   if (!vids.length) { output.innerHTML = "<p class='placeholder'>No trips found.</p>"; return; }
   var extraHeaders = activityEngineColHeaders(cols);
   var baseHeaders  = ["Start Time", "Start Location", "Distance / Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
@@ -1515,16 +1537,23 @@ function renderActivityReport(byDevice, addrMap) {
         "<td>" + fmtDurWhole(dayStop) + "</td>"
       ].concat(engineTotals.map(function (v) { return "<td>" + v + "</td>"; })).join("");
 
-      return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table'>" +
+      return "<details class='activity-fold activity-day-fold'>" +
+        activityFoldSummary(block.date, block.rows.map(function (r) { return r.trip; })) +
+        "<div class='activity-fold-body'><div class='dd-table-wrap'><table class='dd-table'>" +
         "<thead><tr>" + allHeaders.map(function (h) { return "<th>" + h + "</th>"; }).join("") + "</tr></thead>" +
         "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml +
         "<tr style='font-weight:700;background:var(--surface-2)'>" + totalRowCells + "</tr>" +
-        "</tbody></table></div>";
+        "</tbody></table></div></div></details>";
     }).join("");
 
-    return "<section class='report-driver-group'><h4>Driver: " + esc(driverGroup.name) + "</h4>" + dayHtml + "</section>";
+    var driverTrips = [];
+    dayBlocks.forEach(function (block) { block.rows.forEach(function (r) { driverTrips.push(r.trip); }); });
+    return "<details class='activity-fold activity-driver-fold'>" +
+      activityFoldSummary("Driver: " + driverGroup.name, driverTrips) +
+      "<div class='activity-fold-body'>" + dayHtml + "</div></details>";
     }).join("");
-    return "<section class='report-vehicle-group'><h3>" + esc(v.name) + "</h3>" + driverHtml + "</section>";
+    return "<details class='activity-fold activity-vehicle-fold'>" + activityFoldSummary(v.name, v.trips) +
+      "<div class='activity-fold-body'>" + driverHtml + "</div></details>";
   }).join("");
 }
 
@@ -1901,6 +1930,88 @@ function exportActivityPdf() {
   doc.save("activity_report_" + from + "_to_" + to + ".pdf");
 }
 
+function addActivityGroupedWorksheet(wb, byDevice, addrMap, cols) {
+  var extraHeaders = activityEngineColHeaders(cols);
+  var headers = ["Name", "Start date", "Start Time", "Start Location", "End Time", "End Location", "Driver",
+    "Distance (" + distUnit() + ")", "Driving Duration", "Idle Duration", "Stop Duration"].concat(extraHeaders);
+  var ws = wb.addWorksheet("Activity Report");
+  ws.properties.outlineLevelRow = 3;
+  ws.properties.outlineProperties = { summaryBelow: true, summaryRight: false };
+  ws.views = [{ state: "frozen", ySplit: 1, showOutlineSymbols: true }];
+  ws.columns = [36, 14, 14, 48, 14, 48, 30, 18, 20, 20, 20].concat(extraHeaders.map(function () { return 24; }))
+    .map(function (width) { return { width: width }; });
+  var header = ws.addRow(headers);
+  header.font = { name: "Arial", bold: true, color: { argb: "FFFFFFFF" } };
+  header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0078D4" } };
+  header.alignment = { vertical: "middle", wrapText: true };
+  header.height = 30;
+
+  function addRow(values, level, total) {
+    var row = ws.addRow(values);
+    row.outlineLevel = level;
+    row.hidden = level > 0;
+    // ExcelJS 4.4 derives collapsed from a sheet-wide threshold, which cannot
+    // mark level-0 summary rows. Serialize the actual summary-below boundaries.
+    Object.defineProperty(row, "collapsed", { value: total, configurable: true });
+    row.font = { name: "Arial", size: 11, bold: total };
+    if (total) row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: level === 0 ? "FFE8F4FD" : "FFF5F5F5" } };
+    for (var c = 8; c <= headers.length; c++) row.getCell(c).numFmt = c === 8 ? "0.00" : "[h]:mm:ss";
+    return row;
+  }
+  function subtotal(label, first, totals, level) {
+    var last = ws.rowCount;
+    var row = addRow([label], level, true);
+    totals.forEach(function (value, i) {
+      var cell = row.getCell(i + 8);
+      var letter = cell.address.replace(/[0-9]/g, "");
+      // 9 includes outline-hidden trips and ignores nested SUBTOTAL formulas.
+      cell.value = { formula: "SUBTOTAL(9," + letter + first + ":" + letter + last + ")", result: value };
+    });
+  }
+  function addTotals(target, values) {
+    values.forEach(function (value, i) { target[i] += value || 0; });
+  }
+  function zeroTotals() { return headers.slice(7).map(function () { return 0; }); }
+  function tripValues(t) {
+    var drive = parseDurationToMins(t.drivingDuration);
+    if (drive == null) drive = durationMins(t.start, t.stop);
+    var idle = parseDurationToMins(t.idlingDuration) || 0;
+    var stop = parseDurationToMins(t.stopDuration);
+    var values = [distVal(t.distance), drive / 1440, idle / 1440, stop == null ? null : stop / 1440];
+    cols.forEach(function (id) {
+      if (id === "total-engine") values.push((drive + idle) / 1440);
+      else if (id === "drive-only") values.push(drive / 1440);
+      else if (id === "idle-only") values.push(idle / 1440);
+      else if (id === "work-split") {
+        values.push(((parseDurationToMins(t.workDrivingDuration) || 0) + (parseDurationToMins(t.workIdlingDuration) || 0)) / 1440);
+        values.push(((parseDurationToMins(t.afterHoursDrivingDuration) || 0) + (parseDurationToMins(t.afterHoursIdlingDuration) || 0)) / 1440);
+      }
+    });
+    return values;
+  }
+  activityVehicleIds(byDevice).forEach(function (vid) {
+    var vehicle = byDevice[vid], vehicleFirst = ws.rowCount + 1, vehicleTotals = zeroTotals();
+    vehicle.driverGroups.forEach(function (driver) {
+      var driverFirst = ws.rowCount + 1, driverTotals = zeroTotals();
+      driver.days.forEach(function (day) {
+        var dayFirst = ws.rowCount + 1, dayTotals = zeroTotals();
+        day.rows.forEach(function (r) {
+          var t = r.trip, values = tripValues(t);
+          addRow([vehicle.name, day.date, fmtTime(t.start), startAddressForRow(r, addrMap), fmtTime(t.stop),
+            addressForPoint(t.stopPoint, addrMap), driver.name].concat(values), 3, false);
+          addTotals(dayTotals, values);
+        });
+        subtotal(day.date + " Total — " + driver.name, dayFirst, dayTotals, 2);
+        addTotals(driverTotals, dayTotals);
+      });
+      subtotal("Driver: " + driver.name + " Total", driverFirst, driverTotals, 1);
+      addTotals(vehicleTotals, driverTotals);
+    });
+    subtotal(vehicle.name + " Total", vehicleFirst, vehicleTotals, 0);
+  });
+  return ws;
+}
+
 function exportActivityExcel() {
   var byDevice = state.activityByDevice;
   var addrMap  = state.activityAddrMap || {};
@@ -1910,7 +2021,7 @@ function exportActivityExcel() {
   var from     = document.getElementById("filter-from").value;
   var to       = document.getElementById("filter-to").value;
   var dUnit    = distUnit();
-  var vids     = Object.keys(byDevice);
+  var vids     = activityVehicleIds(byDevice);
 
   // ── Build per-vehicle KPI data ────────────────────────────────────────────
   var allTrips    = [];
@@ -2027,100 +2138,10 @@ function exportActivityExcel() {
   var imgId = wb.addImage({ base64: chartBase64, extension: "png" });
   summarySheet.addImage(imgId, { tl: { col: 3, row: 0 }, br: { col: 10, row: 20 } });
 
-  // ── Per-vehicle sheets ────────────────────────────────────────────────────
-  var extraHeaders  = activityEngineColHeaders(cols);
-  var baseHeaders   = ["Driver", "Start Time", "Start Location", "Distance (" + dUnit + ")", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"];
-  var allColHeaders = baseHeaders.concat(extraHeaders);
-  var colWidths     = [{ width: 28 }, { width: 12 }, { width: 42 }, { width: 16 }, { width: 42 }, { width: 12 }, { width: 16 }, { width: 16 }]
-                       .concat(extraHeaders.map(function () { return { width: 22 }; }));
-
-  vids.forEach(function (vid) {
-    var v           = byDevice[vid];
-    var sheetName   = v.name.replace(/[\\\/\?\*\[\]:]/g, "_").slice(0, 31) || ("V" + vid.slice(-4));
-    var baseSheetName = sheetName, sheetSuffix = 2;
-    while (wb.worksheets.some(function (sheet) { return sheet.name.toLowerCase() === sheetName.toLowerCase(); })) {
-      var suffix = " (" + sheetSuffix++ + ")";
-      sheetName = baseSheetName.slice(0, 31 - suffix.length) + suffix;
-    }
-    var ws          = wb.addWorksheet(sheetName);
-    ws.columns      = colWidths;
-
-    var r1 = ws.addRow(["Activity Report — " + v.name]);
-    r1.font = { bold: true, size: 12 };
-    var r2 = ws.addRow(["Period: " + from + " to " + to]);
-    r2.font = { color: { argb: "FF6B7280" }, size: 10 };
-    ws.addRow([]);
-
-    v.driverGroups.forEach(function (driverGroup) {
-    var driverRow = ws.addRow(["Driver: " + driverGroup.name]);
-    driverRow.font = { bold: true, size: 11 };
-    driverRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8F4FD" } };
-    driverGroup.days.forEach(function (block) {
-      var prevTrip = block.rows[0].prevTrip;
-
-      // "Starting from" header row
-      var sfRow = ws.addRow([block.date + " — Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)]);
-      sfRow.font = { bold: true };
-      sfRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F5F5" } };
-
-      // Column header row
-      var hRow = ws.addRow(allColHeaders);
-      hRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
-      hRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0078D4" } };
-
-      // Ignition On row
-      if (prevTrip) {
-        var ignRow = [driverGroup.name, fmtTime(block.rows[0].trip.start), "(Ignition On)", "", "", "", "—", ""];
-        for (var ei = 0; ei < extraHeaders.length; ei++) ignRow.push("");
-        var iRow = ws.addRow(ignRow);
-        iRow.font = { color: { argb: "FFD97706" } };
-      }
-
-      // Trip rows
-      block.rows.forEach(function (r) {
-        var t         = r.trip;
-        var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
-        var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
-        var stopMins  = parseDurationToMins(t.stopDuration);
-        var row = [
-          driverGroup.name,
-          fmtTime(t.start),
-          startAddressForRow(r, addrMap),
-          fmtActivityDistance(t.distance),
-          addressForPoint(t.stopPoint, addrMap),
-          fmtTime(t.stop),
-          fmtDurPrecise(idleMins),
-          stopMins != null ? fmtDurPrecise(stopMins) : ""
-        ];
-        ws.addRow(row.concat(activityEngineColValues(t, cols)));
-      });
-
-      // Daily total row
-      var dayDistKm = block.rows.reduce(function (s, r) { return s + (r.trip.distance || 0); }, 0);
-      var dayDrive  = block.rows.reduce(function (s, r) { var dm = parseDurationToMins(r.trip.drivingDuration); return s + (dm != null ? dm : durationMins(r.trip.start, r.trip.stop)); }, 0);
-      var dayIdle   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.idlingDuration) || 0); }, 0);
-      var dayStop   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.stopDuration) || 0); }, 0);
-      var totalRowData = [
-        driverGroup.name,
-        block.date + " Total",
-        "",
-        fmtActivityDistance(dayDistKm) + " in " + fmtDurWhole(dayDrive),
-        "",
-        block.rows.length + " stops",
-        fmtDurWhole(dayIdle),
-        fmtDurWhole(dayStop)
-      ];
-      var tRow = ws.addRow(totalRowData.concat(activityEngineDayTotals(block.rows, cols)));
-      tRow.font = { bold: true };
-      tRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F5F5" } };
-
-      ws.addRow([]);
-    });
-    });
-  });
+  addActivityGroupedWorksheet(wb, byDevice, addrMap, cols);
 
   // ── Write and trigger download ─────────────────────────────────────────────
-  wb.xlsx.writeBuffer().then(function (buffer) {
+  return wb.xlsx.writeBuffer().then(function (buffer) {
     var blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     var url  = URL.createObjectURL(blob);
     var a    = document.createElement("a");
