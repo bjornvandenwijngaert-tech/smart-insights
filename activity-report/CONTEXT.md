@@ -90,7 +90,8 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
   Excel opens on Activity Report with those same daily rows and vehicle totals
   below. No individual-trip rows exist anywhere in the workbook, including hidden
   rows or sheets. Outline levels are vehicle / day (1/2), initially expanded.
-  The previous vehicle Summary/chart remains a secondary worksheet.
+  The workbook contains only Activity Report; there is no Summary worksheet or
+  generated chart. This export no longer needs Chart.js or a canvas.
   Hours/stop/idle/driving/work figures use decimal hours; selected engine-on,
   driving-only and idle-only reporting columns use `[h]:mm`;
   distance follows the user's profile. Excel dates/times are native date values.
@@ -127,9 +128,9 @@ the Legacy Trip History standalone add-in. The regression suite checks this.
 
 ## Version
 
-v1.3.3 — daily rows plain and vehicle-total rows bold in HTML/Excel.
-Reporting selectors, daily-only grain and calculations retain their contracts.
-Mirrored to Smart Insights v2.12.3.
+v1.3.4 — remove the Summary worksheet and its chart generation from
+Excel export. The workbook contains only Activity Report with daily rows and
+vehicle totals. Mirrored to Smart Insights v2.12.4.
 
 ## Data validation status — 28 October 2026
 

@@ -242,9 +242,10 @@ for (const variant of variants.filter(v => !v.legacy)) {
     assert(!JSON.stringify(tables).includes("Driver:"));
   });
   test(variant.label + ": Excel exports daily rows only with no hidden trip itemisation", async () => {
-    const app = loadApp(variant); runReport(app, variant); await app.hooks.exportActivityExcel();
-    const wb = app.workbooks[0], ws = wb.worksheets[1];
-    assert.equal(wb.views[0].activeTab, 1); assert.equal(ws.rowCount, 6);
+    const app = loadApp(variant); runReport(app, variant); delete app.context.Chart; await app.hooks.exportActivityExcel();
+    const wb = app.workbooks[0], ws = wb.worksheets[0];
+    assert.deepEqual(wb.worksheets.map(sheet => sheet.name), ["Activity Report"]);
+    assert.equal(wb.views[0].activeTab, 0); assert.equal(ws.rowCount, 6);
     assert.equal(ws.properties.outlineLevelRow, 1); assert(ws.properties.outlineProperties.summaryBelow);
     assert(ws.views[0].showOutlineSymbols); assert.equal(ws.views[0].ySplit, 1);
     assert.deepEqual(ws.rows.slice(1).filter(r => !r.hidden).map(r => r.outlineLevel), [1, 1, 0, 1, 0]);
@@ -262,7 +263,7 @@ for (const variant of variants.filter(v => !v.legacy)) {
   });
   test(variant.label + ": Excel totals count trip metrics and elapsed daily spans exactly once", async () => {
     const app = loadApp(variant); runReport(app, variant); await app.hooks.exportActivityExcel();
-    const ws = app.workbooks[0].worksheets[1];
+    const ws = app.workbooks[0].worksheets[0];
     assert.deepEqual(ws.rows[1].values.slice(6, 12).map(v => typeof v === "number" ? v : v.result), [5, 21, 0.25, 3, 195 / 1440, 60]);
     assert.equal(ws.rows[3].values[6].result, 8); assert.equal(ws.rows[3].values[11].result, 105);
     assert.equal(ws.rows[3].values[6].formula, "SUM(G2:G3)");
@@ -286,19 +287,19 @@ for (const variant of variants.filter(v => !v.legacy)) {
     data.trips[1].drivingDuration = null;
     const app = loadApp(variant, data); runReport(app, variant); app.hooks.state.unitSystem = "Imperial";
     app.elements["col-work-split"].checked = true; app.hooks.filterReportByVehicle("bVan"); await app.hooks.exportActivityExcel();
-    const ws = app.workbooks[0].worksheets[1], total = ws.rows.at(-1);
+    const ws = app.workbooks[0].worksheets[0], total = ws.rows.at(-1);
     assert.equal(ws.rows[0].values[11], "Distance (mi)"); assert.equal(ws.rows[0].values.length, 16);
     assert(Math.abs(total.values[11].result - 105 * 0.621371) < 1e-9); assert.equal(total.values[9].result, 30);
     assert(Math.abs(total.values[10].result - 1825 / 1440) < 1e-10); assert.equal(total.getCell(11).numFmt, "[h]:mm");
     assert.equal(total.values[12].result, 1.75); assert.equal(total.values[13].result, 35 / 60);
     app.elements["col-work-split"].checked = false; await app.hooks.exportActivityExcel();
-    assert.equal(app.workbooks[1].worksheets[1].rows[0].values.length, 14);
+    assert.equal(app.workbooks[1].worksheets[0].rows[0].values.length, 14);
   });
   test(variant.label + ": duplicate vehicle names remain separate by device identity", async () => {
     const data = fixture(); data.devices[1].name = data.devices[0].name;
     const app = loadApp(variant, data); const groups = runReport(app, variant); assert.equal(Object.keys(groups).length, 2);
     await app.hooks.exportActivityExcel();
-    assert.deepEqual(app.workbooks[0].worksheets[1].rows.filter(r => r.outlineLevel === 0).map(r => r.values[11].result), [5, 105]);
+    assert.deepEqual(app.workbooks[0].worksheets[0].rows.filter(r => r.outlineLevel === 0).map(r => r.values[11].result), [5, 105]);
   });
   test(variant.label + ": daily elapsed time includes gaps and ends at latest arrival", () => {
     const data = fixture(); data.trips[1].stop = "2026-10-12T14:00:00Z";
@@ -314,7 +315,7 @@ for (const variant of variants.filter(v => !v.legacy)) {
     assert.equal(day.date, "2026-10-24"); assert.equal(app.hooks.activityDayElapsed(day), 240);
     const end = app.hooks.activityDayEndpoints(day, app.hooks.state.activityAddrMap);
     assert.equal(end.startTime, "23:00"); assert.equal(end.endTime, "02:00");
-    await app.hooks.exportActivityExcel(); const ws = app.workbooks[0].worksheets[1];
+    await app.hooks.exportActivityExcel(); const ws = app.workbooks[0].worksheets[0];
     assert.equal(ws.rowCount, 3);
     assert.equal(ws.rows[1].values[6].result, 4); assert.equal(ws.rows[2].values[6].result, 4);
     assert.equal(ws.rows[1].values[12].toISOString(), "2026-10-24T22:00:00.000Z");
@@ -382,7 +383,7 @@ for (const variant of variants.filter(v => !v.legacy)) {
     const html = app.elements["report-output"].innerHTML;
     assert.equal((html.match(/data-day='2026-07-31'/g) || []).length, 1); assert(!html.includes("<details"));
     await app.hooks.exportActivityExcel();
-    const sheet = app.workbooks[0].worksheets[1];
+    const sheet = app.workbooks[0].worksheets[0];
     assert.equal(sheet.rowCount, 4, "Header + two daily rows + vehicle total, no action rows");
     assert(sheet.rows.slice(1).every(row => !row.hidden));
     assert.equal(sheet.rows[2].values[1].toISOString(), "2026-07-31T00:00:00.000Z");
@@ -419,7 +420,9 @@ for (const variant of variants.filter(v => !v.legacy)) {
       app.hooks.exportActivityPdf(); const pdf = app.pdfs[0].tables[0];
       assert.deepEqual(Array.from(pdf.head[1]), headers.slice(1), "PDF headers mask " + mask);
       assert.deepEqual(Array.from(pdf.body[0]), csv[1].slice(1)); assert.equal(pdf.body.length, 3);
-      await app.hooks.exportActivityExcel(); const ws = app.workbooks[0].worksheets[1];
+      delete app.context.Chart;
+      await app.hooks.exportActivityExcel(); const ws = app.workbooks[0].worksheets[0];
+      assert.deepEqual(app.workbooks[0].worksheets.map(sheet => sheet.name), ["Activity Report"], "Single worksheet, mask " + mask);
       assert.deepEqual(ws.rows[0].values.slice(0, headers.length), headers, "Excel headers mask " + mask);
       assert.equal(ws.rowCount, 6); assert(ws.rows.slice(1).every(row => !row.hidden && row.outlineLevel <= 1));
       assert(ws.rows[0].font.bold, "Keep the Excel header bold");

@@ -35,9 +35,12 @@ smart-insights/
 
 ---
 
-## Current version: v2.12.3
+## Current version: v2.12.4
 
 ### Changelog since v2.2.0
+- **v2.12.4** — Activity Report Excel export contains only the
+  Activity Report worksheet. Removed the Summary worksheet and offscreen summary
+  chart generation. Standalone Activity Report v1.3.4.
 - **v2.12.3** — Activity Report daily data rows are plain; only
   vehicle-total data rows are bold in the add-in and Excel. Existing bold Excel
   headers remain. No changes to reporting selectors, daily grouping or formulas.
