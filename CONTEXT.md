@@ -35,9 +35,15 @@ smart-insights/
 
 ---
 
-## Current version: v2.12.1
+## Current version: v2.12.2
 
 ### Changelog since v2.2.0
+- **v2.12.2** — Restore the Activity Report's original Engine On
+  (total), Driving Time, Idle Time and Work/After-hours selectors. Their removal
+  in v2.12.1 was an incorrect assumption during daily-only cleanup. One shared
+  column model now drives daily rows, formats, layout and all exports for every
+  selection combination, preserving saved choices. No trip itemisation returns.
+  Standalone Activity Report v1.3.2.
 - **v2.12.1** — Activity Report is daily totals only: exactly one
   row per vehicle/day and one vehicle-period total. Removed on-screen expansion
   and all individual-trip rows from Excel, including hidden rows. Excel has only

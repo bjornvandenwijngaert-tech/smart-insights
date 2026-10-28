@@ -89,7 +89,8 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
   below. No individual-trip rows exist anywhere in the workbook, including hidden
   rows or sheets. Outline levels are vehicle / day (1/2), initially expanded.
   The previous vehicle Summary/chart remains a secondary worksheet.
-  Hours/stop/idle/driving/work figures use decimal hours; engine-on uses `[h]:mm`;
+  Hours/stop/idle/driving/work figures use decimal hours; selected engine-on,
+  driving-only and idle-only reporting columns use `[h]:mm`;
   distance follows the user's profile. Excel dates/times are native date values.
 - **Excel formulas:** daily metrics are the aggregated source facts. Daily elapsed
   hours use `24*(day end UTC - day start UTC)`; engine-on uses `(idle + driving)/24`.
@@ -97,9 +98,14 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
   day's first departure and final arrival in UTC, not individual-trip data, so
   overnight/DST remains correct. All exported rows are visible initially, and
   only vehicle groups can collapse. Verify OOXML and Excel on library upgrades.
-- **Column controls:** only Work/After-hours is optional. Driving, idle and engine
-  are always part of the daily summary; obsolete trip-only checkbox settings are
-  ignored when restoring older saved preferences.
+- **Column controls:** preserve the original Engine On (total), Driving Time,
+  Idle Time and Work/After-hours selectors. They choose additional aggregate
+  reporting columns, independently of the daily-only row grain. The base daily
+  stop/idle/driving-hour totals remain base summary facts. All renderers and
+  exports share `activitySummaryColumns` for order, values, formats and widths.
+  Engine On is checked by default when no saved array exists; saved arrays are
+  respected exactly, including empty and work-only selections. Column choices
+  apply on Run, as before. Daily-only cleanup does not remove reporting choices.
 - **Filtering:** vehicle filters update every scoped summary and export.
 - **Result snapshot:** starting a run clears previous exportable Activity data and
   hides exports. Publish trips, groups, addresses and `activityRange` together
@@ -116,9 +122,10 @@ the Legacy Trip History standalone add-in. The regression suite checks this.
 
 ## Version
 
-v1.3.1 — remove all remaining trip itemisation, including hidden Excel
-rows and on-screen day expansion. Exactly one vehicle/day row and one vehicle
-footer, with matching CSV/PDF output. Mirrored to Smart Insights v2.12.1.
+v1.3.2 — restore all four engine reporting selectors removed by
+mistake in v1.3.1. Selected daily-summary columns are consistent across HTML,
+CSV, PDF and Excel, including saved preferences. No trip itemisation is added.
+Mirrored to Smart Insights v2.12.2.
 
 Regression checks: `node --test tests/trip-report-drivers.test.cjs` from the repo root.
 

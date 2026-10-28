@@ -426,8 +426,18 @@ function fmtActivityDistanceKpi(km) {
 }
 
 function getActivityCols() {
-  var el = document.getElementById("col-work-split");
-  return el && el.checked ? ["work-split"] : [];
+  return ["total-engine", "drive-only", "idle-only", "work-split"].filter(function (id) {
+    var el = document.getElementById("col-" + id);
+    return el && el.checked;
+  });
+}
+
+function restoreActivityColumns(saved) {
+  var cols = Array.isArray(saved) ? saved : ["total-engine"];
+  ["total-engine", "drive-only", "idle-only", "work-split"].forEach(function (id) {
+    var el = document.getElementById("col-" + id);
+    if (el) el.checked = cols.indexOf(id) >= 0;
+  });
 }
 
 // ─── Run ───────────────────────────────────────────────────────────────────
@@ -523,28 +533,59 @@ function activityDayElapsed(block) {
   return Math.max(0, durationMins(block.rows[0].trip.start, activityLastTrip(block).stop));
 }
 
+function activitySummaryColumns(cols) {
+  var columns = [
+    { key: "elapsed", header: "Total Hours (h)", format: "0.00", width: 17, uiWidth: 85 },
+    { key: "stopped", header: "Total Stop Duration (h)", format: "0.00", width: 22, uiWidth: 110 },
+    { key: "idle", header: "Total Idle Duration (h)", format: "0.00", width: 22, uiWidth: 110 },
+    { key: "driving", header: "Total Driving Duration (h)", format: "0.00", width: 22, uiWidth: 120 }
+  ];
+  [
+    { id: "total-engine", key: "engine", header: "Engine On (Total)" },
+    { id: "drive-only", key: "drive-only", header: "Driving Time" },
+    { id: "idle-only", key: "idle-only", header: "Idle Time" }
+  ].forEach(function (column) {
+    if (cols.indexOf(column.id) >= 0) columns.push({ key: column.key, header: column.header, format: "[h]:mm", width: 20, uiWidth: 100 });
+  });
+  columns.push({ key: "distance", header: "Distance (" + distUnit() + ")", format: "0.00", width: 18, uiWidth: 95 });
+  if (cols.indexOf("work-split") >= 0) {
+    columns.push({ key: "work", header: "Work Engine (h)", format: "0.00", width: 24, uiWidth: 110 });
+    columns.push({ key: "afterHours", header: "After-hours Engine (h)", format: "0.00", width: 24, uiWidth: 110 });
+  }
+  return columns;
+}
+
 function activitySummaryHeaders(cols) {
-  return ["Name", "Start Date", "Start Time", "Start Location", "End Time", "End Location", "Total Hours (h)",
-    "Total Stop Duration (h)", "Total Idle Duration (h)", "Total Driving Duration (h)", "Engine On (Total)", "Distance (" + distUnit() + ")"]
-    .concat(cols.indexOf("work-split") < 0 ? [] : ["Work Engine (h)", "After-hours Engine (h)"]);
+  return ["Name", "Start Date", "Start Time", "Start Location", "End Time", "End Location"]
+    .concat(activitySummaryColumns(cols).map(function (column) { return column.header; }));
+}
+
+function activitySummaryGridStyle(cols) {
+  var columns = activitySummaryColumns(cols);
+  var widths = columns.map(function (column) { return column.uiWidth + "px"; });
+  var minWidth = columns.reduce(function (sum, column) { return sum + column.uiWidth; }, 720);
+  return "--activity-summary-columns:105px 75px minmax(190px,1.5fr) 75px minmax(190px,1.5fr) " + widths.join(" ")
+    + ";--activity-summary-min-width:" + minWidth + "px";
 }
 
 function activitySummaryNumbers(trips, elapsed, cols) {
   var totals = activityTotals(trips);
-  var values = [elapsed / 60, totals.stopped / 60, totals.idle / 60, totals.driving / 60, totals.engine / 1440, distVal(totals.distance)];
+  var values = { elapsed: elapsed / 60, stopped: totals.stopped / 60, idle: totals.idle / 60, driving: totals.driving / 60,
+    engine: totals.engine / 1440, "drive-only": totals.driving / 1440, "idle-only": totals.idle / 1440, distance: distVal(totals.distance) };
   if (cols.indexOf("work-split") >= 0) {
     ["work", "afterHours"].forEach(function (prefix) {
-      values.push(trips.reduce(function (sum, trip) {
+      values[prefix] = trips.reduce(function (sum, trip) {
         return sum + (parseDurationToMins(trip[prefix + "DrivingDuration"]) || 0) + (parseDurationToMins(trip[prefix + "IdlingDuration"]) || 0);
-      }, 0) / 60);
+      }, 0) / 60;
     });
   }
-  return values;
+  return activitySummaryColumns(cols).map(function (column) { return values[column.key]; });
 }
 
-function activityNumberText(values) {
+function activityNumberText(values, cols) {
+  var columns = activitySummaryColumns(cols);
   return values.map(function (value, i) {
-    if (i !== 4) return value.toFixed(2);
+    if (columns[i].format !== "[h]:mm") return value.toFixed(2);
     var minutes = Math.round(value * 1440);
     return Math.floor(minutes / 60) + ":" + String(minutes % 60).padStart(2, "0");
   });
@@ -554,7 +595,7 @@ function activityDayValues(block, addrMap, cols) {
   var endpoints = activityDayEndpoints(block, addrMap);
   var trips = block.rows.map(function (row) { return row.trip; });
   return [block.date.split("-").reverse().join("/"), endpoints.startTime, endpoints.start, endpoints.endTime, endpoints.end]
-    .concat(activityNumberText(activitySummaryNumbers(trips, activityDayElapsed(block), cols)));
+    .concat(activityNumberText(activitySummaryNumbers(trips, activityDayElapsed(block), cols), cols));
 }
 
 function activityVehicleNumbers(vehicle, cols) {
@@ -581,9 +622,9 @@ function renderActivityReport(byDevice, addrMap) {
         }).join("") + "</div>";
     }).join("");
     var footer = "<div class='activity-vehicle-total activity-summary-grid'><span class='activity-total-label'>" + esc(v.name) + " Total</span>"
-      + activityNumberText(activityVehicleNumbers(v, cols)).map(function (value) { return "<strong class='activity-number'>" + value + "</strong>"; }).join("") + "</div>";
+      + activityNumberText(activityVehicleNumbers(v, cols), cols).map(function (value) { return "<strong class='activity-number'>" + value + "</strong>"; }).join("") + "</div>";
     return "<section class='activity-vehicle-block'><h3>" + esc(v.name) + "</h3><p class='activity-period'>" + esc(period) + "</p>"
-      + "<div class='activity-summary-table" + (cols.indexOf("work-split") >= 0 ? " activity-with-work" : "") + "'>"
+      + "<div class='activity-summary-table' style='" + activitySummaryGridStyle(cols) + "'>"
       + "<div class='activity-summary-head activity-summary-grid' aria-hidden='true'>" + summaryHeaders.map(function (header) { return "<span>" + esc(header) + "</span>"; }).join("") + "</div>"
       + dayHtml + footer + "</div></section>";
   }).join("");
@@ -609,8 +650,7 @@ function restoreSettings() {
     if (s.len)  { var lenEl = document.getElementById("range-length"); if (lenEl) lenEl.value = s.len; }
     if (s.from) { var fromEl = document.getElementById("filter-from"); if (fromEl) fromEl.value = s.from; }
     if (s.to)   { var toEl   = document.getElementById("filter-to");   if (toEl)   toEl.value   = s.to;   }
-    var el = document.getElementById("col-work-split");
-    if (el) el.checked = (s.cols || []).indexOf("work-split") !== -1;
+    restoreActivityColumns(s.cols);
   } catch (e) {}
 }
 
@@ -660,7 +700,7 @@ function exportActivityCsv() {
   activityVehicleIds(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
     v.days.forEach(function (day) { rows.push([v.name].concat(activityDayValues(day, addrMap, cols))); });
-    rows.push([v.name + " Total", "", "", "", "", ""].concat(activityNumberText(activityVehicleNumbers(v, cols))));
+    rows.push([v.name + " Total", "", "", "", "", ""].concat(activityNumberText(activityVehicleNumbers(v, cols), cols)));
   });
   if (rows.length > 1) downloadCsvBlob(rows, "activity_report_" + from + "_to_" + to + ".csv");
 }
@@ -721,7 +761,7 @@ function exportActivityPdf() {
       var body = v.days.map(function (day) { return activityDayValues(day, addrMap, cols); });
       var totalStyles = { fontStyle: "bold", fillColor: [232, 244, 253] };
       body.push([{ content: v.name + " Total", colSpan: 5, styles: totalStyles }].concat(
-        activityNumberText(activityVehicleNumbers(v, cols)).map(function (value) { return { content: value, styles: totalStyles }; })
+        activityNumberText(activityVehicleNumbers(v, cols), cols).map(function (value) { return { content: value, styles: totalStyles }; })
       ));
 
       doc.autoTable({
@@ -755,6 +795,7 @@ function activityWallDate(iso, dateOnly) {
 }
 
 function addActivityGroupedWorksheet(wb, byDevice, addrMap, cols) {
+  var columns = activitySummaryColumns(cols);
   var headers = activitySummaryHeaders(cols);
   var utcStart = headers.length + 1, utcEnd = utcStart + 1;
   var ws = wb.addWorksheet("Activity Report");
@@ -762,7 +803,7 @@ function addActivityGroupedWorksheet(wb, byDevice, addrMap, cols) {
   ws.properties.outlineLevelRow = 1;
   ws.properties.outlineProperties = { summaryBelow: true, summaryRight: false };
   ws.views = [{ state: "frozen", ySplit: 1, showOutlineSymbols: true }];
-  ws.columns = [36, 14, 12, 48, 12, 48, 17, 22, 22, 22, 20, 18].concat(headers.slice(12).map(function () { return 24; }))
+  ws.columns = [36, 14, 12, 48, 12, 48].concat(columns.map(function (column) { return column.width; }))
     .map(function (width) { return { width: width }; }).concat([{ hidden: true }, { hidden: true }]);
   var header = ws.addRow(headers.concat(["Day Start (UTC)", "Day End (UTC)"]));
   header.font = { name: "Arial", bold: true, color: { argb: "FFFFFFFF" } };
@@ -784,7 +825,7 @@ function addActivityGroupedWorksheet(wb, byDevice, addrMap, cols) {
     row.getCell(3).numFmt = "hh:mm";
     row.getCell(5).numFmt = "hh:mm";
     for (var c = 7; c <= headers.length; c++) {
-      row.getCell(c).numFmt = c === 11 ? "[h]:mm" : "0.00";
+      row.getCell(c).numFmt = columns[c - 7].format;
       if (level === 1) row.getCell(c).font = { name: "Arial", size: 11, bold: true };
     }
     return row;
@@ -807,7 +848,13 @@ function addActivityGroupedWorksheet(wb, byDevice, addrMap, cols) {
       var row = addRow([vehicle.name, activityWallDate(endpoints.startDateTime, true), activityWallDate(endpoints.startDateTime), endpoints.start,
         activityWallDate(endpoints.endDateTime), endpoints.end].concat(values, [new Date(endpoints.startDateTime), new Date(endpoints.endDateTime)]), 1, false);
       row.getCell(7).value = { formula: "24*(" + endLetter + row.number + "-" + startLetter + row.number + ")", result: values[0] };
-      row.getCell(11).value = { formula: "(I" + row.number + "+J" + row.number + ")/24", result: values[4] };
+      columns.forEach(function (column, i) {
+        var formula;
+        if (column.key === "engine") formula = "(I" + row.number + "+J" + row.number + ")/24";
+        else if (column.key === "drive-only") formula = "J" + row.number + "/24";
+        else if (column.key === "idle-only") formula = "I" + row.number + "/24";
+        if (formula) row.getCell(i + 7).value = { formula: formula, result: values[i] };
+      });
     });
     vehicleTotal(vehicle.name + " Total", vehicleFirst, activityVehicleNumbers(vehicle, cols));
   });

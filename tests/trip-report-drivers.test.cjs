@@ -97,7 +97,7 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
   });
   context.window = context; context.location = { hostname: "my.geotab.com", pathname: "/demo/" };
   let source = fs.readFileSync(path.join(root, variant.file), "utf8");
-  if (variant.privateScope) source = source.replace(/\}\)\(\);\s*$/, "globalThis.reportTestHooks = {state, runActivityReport, runReport, filterReportByVehicle, exportActivityCsv, exportActivityPdf, exportActivityExcel, reportDriverId, isUnassignedDriver, reportUserName, reportDriverInfo, resolveReportDrivers, groupReportDriverDays, buildActivityByDevice, fmtDateInput, applyRangeLength, localDayKey, activityVehicleIds, activityReportRange, activityRangeLabel, activityTotals, fmtActivityTime, activityLastTrip, activityDayEndpoints, activityDayElapsed, activitySummaryHeaders, activitySummaryNumbers, activityNumberText, activityDayValues, activityVehicleNumbers, renderActivityReport, activityWallDate, addActivityGroupedWorksheet};\n})();");
+  if (variant.privateScope) source = source.replace(/\}\)\(\);\s*$/, "globalThis.reportTestHooks = {state, runActivityReport, runReport, getActivityCols, restoreActivityColumns, saveSettings, filterReportByVehicle, exportActivityCsv, exportActivityPdf, exportActivityExcel, reportDriverId, isUnassignedDriver, reportUserName, reportDriverInfo, resolveReportDrivers, groupReportDriverDays, buildActivityByDevice, fmtDateInput, applyRangeLength, localDayKey, activityVehicleIds, activityReportRange, activityRangeLabel, activityTotals, fmtActivityTime, activityLastTrip, activityDayEndpoints, activityDayElapsed, activitySummaryColumns, activitySummaryHeaders, activitySummaryGridStyle, activitySummaryNumbers, activityNumberText, activityDayValues, activityVehicleNumbers, renderActivityReport, activityWallDate, addActivityGroupedWorksheet};\n})();");
   vm.runInContext(source, context, { filename: variant.file });
   const hooks = variant.privateScope ? context.reportTestHooks : context;
   hooks.state.api = { call(method, params, success, failure) {
@@ -391,6 +391,70 @@ for (const variant of variants.filter(v => !v.legacy)) {
     app.hooks.exportActivityCsv(); assert.equal(parseCsv(app.downloads.at(-1)).length, 4);
     app.hooks.exportActivityPdf(); assert.equal(app.pdfs[0].tables[0].body.length, 3);
   });
+  test(variant.label + ": all 16 engine reporting selections align daily UI and every export", async () => {
+    const ids = ["total-engine", "drive-only", "idle-only", "work-split"];
+    const fixed = ["Name", "Start Date", "Start Time", "Start Location", "End Time", "End Location", "Total Hours (h)", "Total Stop Duration (h)", "Total Idle Duration (h)", "Total Driving Duration (h)"];
+    const values = { "Total Hours (h)": 5, "Total Stop Duration (h)": 21, "Total Idle Duration (h)": 0.25, "Total Driving Duration (h)": 3,
+      "Engine On (Total)": 195 / 1440, "Driving Time": 180 / 1440, "Idle Time": 15 / 1440, "Distance (km)": 60, "Work Engine (h)": 35 / 60, "After-hours Engine (h)": 0.5 };
+    const totals = { "Total Hours (h)": 8, "Total Stop Duration (h)": 22, "Total Idle Duration (h)": 25 / 60, "Total Driving Duration (h)": 5,
+      "Engine On (Total)": 325 / 1440, "Driving Time": 300 / 1440, "Idle Time": 25 / 1440, "Distance (km)": 105, "Work Engine (h)": 35 / 60, "After-hours Engine (h)": 0.5 };
+    const text = { "Total Hours (h)": "5.00", "Total Stop Duration (h)": "21.00", "Total Idle Duration (h)": "0.25", "Total Driving Duration (h)": "3.00",
+      "Engine On (Total)": "3:15", "Driving Time": "3:00", "Idle Time": "0:15", "Distance (km)": "60.00", "Work Engine (h)": "0.58", "After-hours Engine (h)": "0.50" };
+    const duration = new Set(["Engine On (Total)", "Driving Time", "Idle Time"]);
+    for (let mask = 0; mask < 16; mask++) {
+      const data = fixture();
+      Object.assign(data.trips[0], { workDrivingDuration: "00:30:00", workIdlingDuration: "00:05:00", afterHoursDrivingDuration: "00:30:00", afterHoursIdlingDuration: "00:00:00" });
+      const app = loadApp(variant, data), selected = ids.filter((id, i) => mask & (1 << i));
+      app.hooks.restoreActivityColumns(selected);
+      assert.deepEqual(Array.from(app.hooks.getActivityCols()), selected, "selected ids mask " + mask);
+      runReport(app, variant);
+      const headers = fixed.concat(mask & 1 ? ["Engine On (Total)"] : [], mask & 2 ? ["Driving Time"] : [], mask & 4 ? ["Idle Time"] : [], ["Distance (km)"], mask & 8 ? ["Work Engine (h)", "After-hours Engine (h)"] : []);
+      const html = app.elements["report-output"].innerHTML;
+      const heading = html.match(/<div class='activity-summary-head[^>]*>(.*?)<\/div>/s)[1];
+      assert.deepEqual(Array.from(heading.matchAll(/<span>(.*?)<\/span>/g), match => match[1]), headers.slice(1), "UI mask " + mask);
+      assert(!/<(?:details|summary|table)\b/.test(html));
+      app.hooks.exportActivityCsv(); const csv = parseCsv(app.downloads.at(-1));
+      assert.deepEqual(csv[0], headers, "CSV headers mask " + mask);
+      assert.equal(csv.length, 6); assert.deepEqual(csv[1].slice(6), headers.slice(6).map(header => text[header]));
+      app.hooks.exportActivityPdf(); const pdf = app.pdfs[0].tables[0];
+      assert.deepEqual(Array.from(pdf.head[1]), headers.slice(1), "PDF headers mask " + mask);
+      assert.deepEqual(Array.from(pdf.body[0]), csv[1].slice(1)); assert.equal(pdf.body.length, 3);
+      await app.hooks.exportActivityExcel(); const ws = app.workbooks[0].worksheets[1];
+      assert.deepEqual(ws.rows[0].values.slice(0, headers.length), headers, "Excel headers mask " + mask);
+      assert.equal(ws.rowCount, 6); assert(ws.rows.slice(1).every(row => !row.hidden && row.outlineLevel <= 1));
+      assert.equal(ws.columns.length, headers.length + 2); assert(ws.columns.slice(-2).every(column => column.hidden));
+      headers.slice(6).forEach((header, i) => {
+        const column = i + 7, value = ws.rows[1].values[column - 1], numeric = value && value.formula ? value.result : value;
+        assert(Math.abs(numeric - values[header]) < 1e-10, header + " daily mask " + mask);
+        assert(Math.abs(ws.rows[3].values[column - 1].result - totals[header]) < 1e-10, header + " vehicle mask " + mask);
+        assert.equal(ws.rows[1].getCell(column).numFmt, duration.has(header) ? "[h]:mm" : "0.00");
+      });
+      if (!mask) assert.equal(ws.rows[1].getCell(11).value, 60, "Distance in K must not be overwritten by an unselected engine formula");
+    }
+  });
+  test(variant.label + ": original menu choices and saved selection arrays are preserved", () => {
+    const ids = ["total-engine", "drive-only", "idle-only", "work-split"];
+    const app = loadApp(variant);
+    let saved;
+    app.context.localStorage.setItem = (key, value) => { saved = JSON.parse(value); };
+    for (let mask = 0; mask < 16; mask++) {
+      const expected = ids.filter((id, i) => mask & (1 << i));
+      app.hooks.restoreActivityColumns(expected);
+      assert.deepEqual(Array.from(app.hooks.getActivityCols()), expected);
+      app.hooks[variant.privateScope ? "saveSettings" : "saveActivitySettings"]("2026-10-07", "2026-10-13");
+      assert.deepEqual(saved.cols, expected);
+    }
+    for (const missing of [undefined, null, {}, "invalid"]) {
+      app.hooks.restoreActivityColumns(missing);
+      assert.deepEqual(Array.from(app.hooks.getActivityCols()), ["total-engine"]);
+    }
+    app.hooks.restoreActivityColumns([]); assert.deepEqual(Array.from(app.hooks.getActivityCols()), []);
+    app.hooks.restoreActivityColumns(["work-split"]); assert.deepEqual(Array.from(app.hooks.getActivityCols()), ["work-split"]);
+    const html = fs.readFileSync(path.join(root, variant.privateScope ? "activity-report/index.html" : "index.html"), "utf8");
+    for (const id of ids) assert.equal((html.match(new RegExp('id="col-' + id + '"', 'g')) || []).length, 1);
+    assert(html.includes('id="col-total-engine" checked> Engine On (total)'));
+    assert(html.includes('id="col-drive-only"> Driving Time')); assert(html.includes('id="col-idle-only"> Idle Time'));
+  });
 }
 
 test("historical driver helpers stay synchronized for Legacy reports", () => {
@@ -406,7 +470,7 @@ test("historical driver helpers stay synchronized for Legacy reports", () => {
 
 test("Activity vehicle/day and worksheet helpers stay synchronized with parent", () => {
   const parent = loadApp(variants[2]).hooks, standalone = loadApp(variants[3]).hooks;
-  for (const name of ["buildActivityByDevice", "activityVehicleIds", "activityReportRange", "activityRangeLabel", "activityTotals", "fmtActivityTime", "activityLastTrip", "activityDayEndpoints", "activityDayElapsed", "activitySummaryHeaders", "activitySummaryNumbers", "activityNumberText", "activityDayValues", "activityVehicleNumbers", "renderActivityReport", "activityWallDate", "addActivityGroupedWorksheet"]) {
+  for (const name of ["getActivityCols", "restoreActivityColumns", "buildActivityByDevice", "activityVehicleIds", "activityReportRange", "activityRangeLabel", "activityTotals", "fmtActivityTime", "activityLastTrip", "activityDayEndpoints", "activityDayElapsed", "activitySummaryColumns", "activitySummaryHeaders", "activitySummaryGridStyle", "activitySummaryNumbers", "activityNumberText", "activityDayValues", "activityVehicleNumbers", "renderActivityReport", "activityWallDate", "addActivityGroupedWorksheet"]) {
     assert.equal(parent[name].toString().replace(/\r\n/g, "\n"), standalone[name].toString().replace(/\r\n/g, "\n"), name);
   }
 });
