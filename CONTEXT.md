@@ -35,9 +35,19 @@ smart-insights/
 
 ---
 
-## Current version: v2.11.0
+## Current version: v2.12.0
 
 ### Changelog since v2.2.0
+- **v2.12.0** — Activity Report now has a clean vehicle/day layout:
+  one horizontal daily summary combining all drivers, a selected-period vehicle
+  footer underneath, and optional trip detail. No driver/week headings or fleet
+  cards. CSV/PDF match; Excel opens on visible daily rows with vehicle/day/trip
+  outlines. Total Hours is the UTC elapsed first-start/latest-stop daily span;
+  vehicle totals sum those spans. Stop/idle/driving use decimal hours; engine-on
+  remains driving+idle, formatted h:mm. Hidden Excel UTC helpers keep overnight
+  and DST formulas correct. Completed result data/range publish together and
+  exports retain the completed range. Standalone Activity Report v1.3.0. Legacy
+  Trip History retains its historical-driver grouping and resolution.
 - **v2.11.0** — Activity Report preview uses collapsed vehicle/driver/day folds,
   matching Vehicle Activity Log's summary-first disclosure style. Excel retains
   the Summary/chart and combines all filtered vehicles on one Activity Report
