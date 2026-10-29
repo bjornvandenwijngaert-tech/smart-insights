@@ -64,14 +64,19 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
   `getSession` → `Get User`, with an 8s timeout guard falling back to
   `SystemSettings.measurementSystem` (database-wide, so it can disagree with the
   user's own profile — it's a last resort, not the source of truth).
-- **A trip has no `startPoint`.** A vehicle starts where it last stopped, so the
-  Start Location is inferred from the *previous* fetched trip's `stopPoint`. The
-  first fetched trip per vehicle has no predecessor in this result and shows
-  "(location unknown)" even if an earlier trip outside the query has coordinates.
-  This is a lookup-context limitation, not evidence of missing source GPS.
+- **A trip has no `startPoint`.** Reuse a valid previous fetched stop only when
+  it precedes departure. Missing daily starts (including the first fetched trip)
+  and missing final stop points are looked up with `Get LogRecord`, scoped to the
+  real Device.id and endpoint UTC instant. The positive 1ms search requests an
+  interpolated boundary point; accept only a valid coordinate at that instant,
+  never an arbitrary older/other-device point. Interpolated records can lack id.
 - **Addresses** are resolved with MyGeotab's own `GetAddresses` — coordinates never
-  leave Geotab's infrastructure. Deduped to ~1m via `coordKey()` and chunked 400 per
-  call to stay under the 450/min limit. Failures fall back to raw coordinates.
+  leave Geotab's infrastructure. Only displayed daily endpoints are geocoded,
+  deduped to ~1m via `coordKey()` and chunked 400 coordinates/call. GPS requests are
+  paced at most 10/sec (<1000/min); geocoder requests at most one/150ms (<450/min).
+  Both use a 15s once-only timeout/error guard. Empty GPS results remain unknown;
+  actual GPS failures show "location lookup failed". Address failures preserve
+  coordinates with an explicit "address lookup failed" label in every output.
 - **Durations** are MyGeotab `TimeSpan` strings (`"1.02:28:55"`), parsed by
   `parseDurationToMins`, which falls back to timestamp math when unparseable.
 - **Driver handovers:** days use the whole chronological vehicle timeline.
@@ -79,8 +84,8 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
 - **Preview:** each vehicle has a horizontal daily table and one selected-period
   total row underneath. Exactly one row per vehicle/day; no trip itemisation,
   disclosure controls, hidden detail, fleet cards or driver/week folds.
-- **Daily endpoints:** earliest trip start and its actual predecessor location,
-  latest trip stop and its location. Times use 24-hour `hh:mm`; dates `dd/mm/yyyy`.
+- **Daily endpoints:** earliest trip start, latest trip stop and their resolved
+  locations. Times use 24-hour `hh:mm`; dates `dd/mm/yyyy`.
 - **Total Hours:** first departure to latest arrival, using actual elapsed UTC
   time, including gaps between trips. Vehicle Total Hours sums daily spans, not
   the elapsed time across the whole report range. Overnight trips belong to their
@@ -114,8 +119,12 @@ It appears in the MyGeotab menu under **Activity** as "Activity Report".
   apply on Run, as before. Daily-only cleanup does not remove reporting choices.
 - **Filtering:** vehicle filters update every scoped summary and export.
 - **Result snapshot:** starting a run clears previous exportable Activity data and
-  hides exports. Publish trips, groups, addresses and `activityRange` together
-  after address resolution completes. CSV/PDF/Excel dates and filenames
+  hides exports. Publish trips, groups, the endpoint/address snapshot and
+  `activityRange` together after resolution completes. GPS jobs use device + UTC
+  instant keys; endpoint keys add start/end role. No enrichment is attached to
+  source trips or rebuilt day/row objects. Superseding runs, report-type changes
+  and leaving a pending add-in cancel obsolete callbacks and queued work.
+  CSV/PDF/Excel dates and filenames
   summaries use that completed range, not subsequently edited date inputs.
 - **Calendar dates:** date inputs use `localDayKey`, matching displayed dates.
 
@@ -128,11 +137,13 @@ the Legacy Trip History standalone add-in. The regression suite checks this.
 
 ## Version
 
-v1.3.4 — remove the Summary worksheet and its chart generation from
-Excel export. The workbook contains only Activity Report with daily rows and
-vehicle totals. Mirrored to Smart Insights v2.12.4.
+v1.3.5 — recover missing displayed endpoint coordinates using native
+LogRecord boundary searches before GetAddresses. One completed snapshot supplies
+HTML/CSV/PDF/Excel; source trip facts and report layout are preserved. Mirrored to
+Smart Insights v2.12.5. Local implementation tests pass. Published at the user's
+request for live testing; customer/native verification remains pending.
 
-## Data validation status — 28 October 2026
+## Data validation status — 29 October 2026
 
 Automated/synthetic fixtures, actual browser rendering and desktop Excel checks
 verify implementation, formulas, selector combinations and formatting. They do
@@ -151,10 +162,16 @@ History/source parity was not completed and was deferred by the user. Resume
 with a stable signed-in connection or the Activity workbook plus native Trips
 History export for the same window, vehicles and units.
 
-Known location semantics: the app produces "(location unknown)" for an absent or
-incomplete endpoint coordinate; valid coordinates with a failed GetAddresses
-lookup fall back to latitude/longitude. First fetched starts lack predecessor
-context. Unknown final locations require checking that final Trip.stopPoint.
+Location correction — 29 October 2026: the customer single-day page confirmed
+resolved destination addresses and unknown first departures, matching the missing
+predecessor context. Version 1.3.5 adds GPS lookup for missing endpoints.
+Its regression fails behaviorally against v1.3.4 and passes in both candidate apps.
+The new fixtures remain synthetic control-flow checks. Real LogRecord producer
+output -> resolver -> real GetAddresses -> customer/native comparison
+is still required, including verifying the 1ms boundary query in the target runtime.
+Browser access subsequently timed out and MyGeotab authentication requires user
+action. The user explicitly requested publication and will perform the live test.
+Do not present the release as customer/native-validated until that check completes.
 
 Review also needs whole overlapping/overnight trips, post-trip stop attribution,
 rounding, browser-local dates versus MyGeotab profile timezone, derived engine-on

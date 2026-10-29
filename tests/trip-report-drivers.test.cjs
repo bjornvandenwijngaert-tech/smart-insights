@@ -38,13 +38,40 @@ function fixture() {
   return { devices, users, trips };
 }
 
+function testClock() {
+  let now = Date.parse("2026-10-29T12:00:00Z"), nextId = 0;
+  const timers = new Map();
+  class ClockDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  }
+  function advance(ms) {
+    const until = now + ms;
+    for (let steps = 0; steps < 10000; steps++) {
+      const next = Array.from(timers).sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+      if (!next || next[1].at > until) { now = until; return; }
+      now = next[1].at; timers.delete(next[0]); next[1].callback();
+    }
+    throw new Error("Timer queue did not settle");
+  }
+  return { Date: ClockDate, advance, get now() { return now; }, get pending() { return timers.size; },
+    setTimeout(callback, delay) { const id = ++nextId; timers.set(id, { callback, at: now + Math.max(0, Number(delay) || 0) }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+    flush() {
+      for (let steps = 0; timers.size && steps < 10000; steps++) advance(Math.max(0, Math.min(...Array.from(timers.values(), t => t.at)) - now));
+      assert.equal(timers.size, 0, "Timer queue did not settle");
+    }
+  };
+}
+
 function loadApp(variant, data = fixture(), denyDrivers = false) {
+  const clock = testClock();
   const elements = {}, calls = [], downloads = [], filenames = [], pdfs = [], workbooks = [];
   function element(id) {
-    if (!elements[id]) elements[id] = { value: "", innerHTML: "", checked: false, children: [],
+    if (!elements[id]) elements[id] = { value: "", innerHTML: "", checked: false, children: [], style: {}, listeners: {},
       classList: { values: new Set(), add(value) { this.values.add(value); }, remove(value) { this.values.delete(value); },
         toggle(value) { this.values.has(value) ? this.values.delete(value) : this.values.add(value); }, contains(value) { return this.values.has(value); } },
-      addEventListener() {}, appendChild(child) { this.children.push(child); } };
+      addEventListener(name, handler) { this.listeners[name] = handler; }, appendChild(child) { this.children.push(child); } };
     return elements[id];
   }
   element("filter-from").value = "2026-10-07"; element("filter-to").value = "2026-10-13";
@@ -86,7 +113,7 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
     addImage() { return 1; }
   }
   const context = vm.createContext({
-    console, Date, Map, Blob: FakeBlob, Uint8Array, setTimeout, clearTimeout, geotab: { addin: {} },
+    console, Date: clock.Date, Map, Blob: FakeBlob, Uint8Array, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, geotab: { addin: {} },
     localStorage: { getItem() { return null; }, setItem() {} },
     URL: { createObjectURL(blob) { downloads.push(blob); return "blob:test"; }, revokeObjectURL() {} },
     alert(message) { throw new Error(message); },
@@ -97,13 +124,14 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
   });
   context.window = context; context.location = { hostname: "my.geotab.com", pathname: "/demo/" };
   let source = fs.readFileSync(path.join(root, variant.file), "utf8");
-  if (variant.privateScope) source = source.replace(/\}\)\(\);\s*$/, "globalThis.reportTestHooks = {state, runActivityReport, runReport, getActivityCols, restoreActivityColumns, saveSettings, filterReportByVehicle, exportActivityCsv, exportActivityPdf, exportActivityExcel, reportDriverId, isUnassignedDriver, reportUserName, reportDriverInfo, resolveReportDrivers, groupReportDriverDays, buildActivityByDevice, fmtDateInput, applyRangeLength, localDayKey, activityVehicleIds, activityReportRange, activityRangeLabel, activityTotals, fmtActivityTime, activityLastTrip, activityDayEndpoints, activityDayElapsed, activitySummaryColumns, activitySummaryHeaders, activitySummaryGridStyle, activitySummaryNumbers, activityNumberText, activityDayValues, activityVehicleNumbers, renderActivityReport, activityWallDate, addActivityGroupedWorksheet};\n})();");
+  if (variant.privateScope) source = source.replace(/\}\)\(\);\s*$/, "globalThis.reportTestHooks = {state, runActivityReport, runReport, getActivityCols, restoreActivityColumns, saveSettings, filterReportByVehicle, exportActivityCsv, exportActivityPdf, exportActivityExcel, reportDriverId, isUnassignedDriver, reportUserName, reportDriverInfo, resolveReportDrivers, groupReportDriverDays, buildActivityByDevice, fmtDateInput, applyRangeLength, localDayKey, activityVehicleIds, activityReportRange, activityRangeLabel, activityTotals, fmtActivityTime, activityLastTrip, activityDayEndpoints, activityDayElapsed, activitySummaryColumns, activitySummaryHeaders, activitySummaryGridStyle, activitySummaryNumbers, activityNumberText, activityDayValues, activityVehicleNumbers, renderActivityReport, activityWallDate, addActivityGroupedWorksheet, setupReports, cancelActivityReport: typeof cancelActivityReport === 'function' ? cancelActivityReport : undefined, activityCoordinate: typeof activityCoordinate === 'function' ? activityCoordinate : undefined, activityLocationKey: typeof activityLocationKey === 'function' ? activityLocationKey : undefined, createActivityRun: typeof createActivityRun === 'function' ? createActivityRun : undefined, activityLocationCall: typeof activityLocationCall === 'function' ? activityLocationCall : undefined, resolveActivityLocations: typeof resolveActivityLocations === 'function' ? resolveActivityLocations : undefined};\n})();");
   vm.runInContext(source, context, { filename: variant.file });
   const hooks = variant.privateScope ? context.reportTestHooks : context;
   hooks.state.api = { call(method, params, success, failure) {
-    calls.push({ method, params: JSON.parse(JSON.stringify(params)) });
+    calls.push({ method, params: JSON.parse(JSON.stringify(params)), at: clock.now });
     if (method === "Get" && params.typeName === "Device") success(data.devices);
     else if (method === "Get" && params.typeName === "Trip") success(data.trips);
+    else if (method === "Get" && params.typeName === "LogRecord") success(data.logRecords || []);
     else if (method === "Get" && params.typeName === "User") {
       if (denyDrivers) failure(new Error("User permission denied"));
       else success(data.users.filter(user => params.search.userIds.includes(user.id)));
@@ -111,12 +139,13 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
     else throw new Error("Unexpected API operation: " + method + " " + JSON.stringify(params));
   } };
   hooks.state.server = "my.geotab.com"; hooks.state.dbName = "demo"; hooks.state.unitSystem = "Metric";
-  return { hooks, elements, calls, downloads, filenames, pdfs, workbooks, data, context };
+  return { hooks, elements, calls, downloads, filenames, pdfs, workbooks, data, context, clock };
 }
 
 function runReport(app, variant, from = "2026-10-07", to = "2026-10-13") {
   let completions = 0;
   app.hooks[variant.legacy ? "runLegacyTripHistoryReport" : "runActivityReport"](from, to, () => completions++);
+  app.clock.flush();
   assert.equal(completions, 1);
   return variant.legacy ? app.hooks.state.legacyByDevice : app.hooks.state.activityByDevice;
 }
@@ -132,6 +161,12 @@ function parseCsv(blob) {
     else value += char;
   }
   row.push(value); rows.push(row); return rows;
+}
+
+// Synthetic control-flow fixture in the documented LogRecord shape. This does
+// not stand in for the required authenticated producer/consumer smoke check.
+function gpsAt(trip, role = "start", longitude = -0.1275, latitude = 51.5072) {
+  return { device: { id: trip.device.id }, dateTime: role === "start" ? trip.start : trip.stop, longitude, latitude, speed: 0 };
 }
 
 for (const variant of variants.filter(v => v.legacy)) {
@@ -200,6 +235,154 @@ for (const variant of variants.filter(v => v.legacy)) {
 }
 
 for (const variant of variants.filter(v => !v.legacy)) {
+  test(variant.label + ": resolves first departure through GPS and native geocoder in every output", async () => {
+    const data = fixture(); data.logRecords = [gpsAt(data.trips[0])];
+    const original = JSON.stringify(data.trips), app = loadApp(variant, data);
+    runReport(app, variant);
+    const location = "Stop -0.1275";
+    app.hooks.exportActivityCsv();
+    assert.equal(parseCsv(app.downloads.at(-1))[1][3], location, "First departure has a GPS-backed address without a preceding fetched trip");
+    assert(app.elements["report-output"].innerHTML.includes(location));
+    app.hooks.exportActivityPdf(); assert.equal(app.pdfs[0].tables[0].body[0][2], location);
+    await app.hooks.exportActivityExcel(); assert.equal(app.workbooks[0].worksheets[0].rows[1].values[3], location);
+    const gps = app.calls.filter(c => c.params.typeName === "LogRecord");
+    assert.equal(gps.length, 2, "Only the two vehicles' missing first departures need GPS");
+    assert.equal(gps[0].params.search.deviceSearch.id, "bVan");
+    assert.equal(gps[0].params.search.fromDate, "2026-10-12T07:00:00.000Z");
+    assert.equal(Date.parse(gps[0].params.search.toDate) - Date.parse(gps[0].params.search.fromDate), 1);
+    assert.equal(gps[0].params.resultsLimit, 3); assert(gps[1].at - gps[0].at >= 100);
+    const coordinates = app.calls.find(c => c.method === "GetAddresses").params.coordinates;
+    assert(coordinates.some(p => p.x === -0.1275 && p.y === 51.5072), "Longitude is x; latitude is y");
+    assert.deepEqual(coordinates.map(p => [p.x, p.y]).sort(), [[-0.1275, 51.5072], [3, 50], [5, 50], [6, 50]].sort());
+    assert.equal(JSON.stringify(data.trips), original, "Enrichment never changes source trips or metrics");
+    const calls = app.calls.length, before = app.elements["report-output"].innerHTML;
+    app.hooks.filterReportByVehicle("bOther"); app.hooks.filterReportByVehicle("");
+    assert.equal(app.elements["report-output"].innerHTML, before); assert.equal(app.calls.length, calls);
+  });
+  test(variant.label + ": missing final stop coordinates are recovered at the actual latest arrival", () => {
+    const data = fixture(); data.trips[4].stopPoint = null; data.logRecords = [gpsAt(data.trips[4], "end", -0.2, 51.6)];
+    const app = loadApp(variant, data), groups = runReport(app, variant);
+    const endpoints = app.hooks.activityDayEndpoints(groups.bVan.days[1], app.hooks.state.activityAddrMap);
+    assert.equal(endpoints.end, "Stop -0.2"); assert.equal(endpoints.endDateTime, data.trips[4].stop);
+    assert(app.calls.some(c => c.params.typeName === "LogRecord" && c.params.search.fromDate === "2026-10-13T10:00:00.000Z"));
+  });
+  test(variant.label + ": GPS identity includes the vehicle and endpoint instant", () => {
+    const data = fixture(); data.trips = [data.trips[0], { ...data.trips[5], start: data.trips[0].start }];
+    data.logRecords = [gpsAt(data.trips[1], "start", -1, 52), gpsAt(data.trips[0])];
+    const app = loadApp(variant, data), groups = runReport(app, variant);
+    assert.equal(app.calls.filter(c => c.params.typeName === "LogRecord").length, 2);
+    assert.equal(app.hooks.activityDayEndpoints(groups.bVan.days[0], app.hooks.state.activityAddrMap).start, "Stop -0.1275");
+    assert.equal(app.hooks.activityDayEndpoints(groups.bOther.days[0], app.hooks.state.activityAddrMap).start, "Stop -1");
+  });
+  test(variant.label + ": coincident missing start and end share one GPS and address lookup", () => {
+    const data = fixture(); data.trips = [{ ...data.trips[0], stop: data.trips[0].start, stopPoint: null }]; data.logRecords = [gpsAt(data.trips[0])];
+    const app = loadApp(variant, data), groups = runReport(app, variant);
+    assert.equal(app.calls.filter(c => c.params.typeName === "LogRecord").length, 1);
+    assert.equal(app.calls.find(c => c.method === "GetAddresses").params.coordinates.length, 1);
+    const endpoints = app.hooks.activityDayEndpoints(groups.bVan.days[0], app.hooks.state.activityAddrMap);
+    assert.equal(endpoints.start, "Stop -0.1275"); assert.equal(endpoints.end, endpoints.start);
+    assert.equal(Object.keys(app.hooks.state.activityLocations.endpoints).length, 2);
+  });
+  test(variant.label + ": unrelated, older and invalid GPS records cannot fabricate an address", () => {
+    const data = fixture(); data.trips = [data.trips[0]];
+    data.logRecords = [
+      { ...gpsAt(data.trips[0]), device: { id: "bDifferent" } },
+      { ...gpsAt(data.trips[0]), dateTime: "2026-10-12T06:59:59Z" },
+      gpsAt(data.trips[0], "start", null, 51), gpsAt(data.trips[0], "start", -0.1, 91)
+    ];
+    const app = loadApp(variant, data), groups = runReport(app, variant);
+    assert.equal(app.hooks.activityDayEndpoints(groups.bVan.days[0], app.hooks.state.activityAddrMap).start, "(location unknown)");
+    assert.deepEqual(app.calls.find(c => c.method === "GetAddresses").params.coordinates, [{ x: 1, y: 50 }]);
+  });
+  test(variant.label + ": malformed stop points are excluded while valid zero coordinates are retained", () => {
+    const data = fixture(); data.trips = [data.trips[0], data.trips[5]];
+    data.trips[0].stopPoint = { x: "invalid", y: 50 }; data.trips[1].stopPoint = { x: 0, y: 0 };
+    const app = loadApp(variant, data), groups = runReport(app, variant);
+    assert.equal(app.hooks.activityDayEndpoints(groups.bVan.days[0], app.hooks.state.activityAddrMap).end, "(location unknown)");
+    assert.equal(app.hooks.activityDayEndpoints(groups.bOther.days[0], app.hooks.state.activityAddrMap).end, "Stop 0");
+    assert.deepEqual(app.calls.find(c => c.method === "GetAddresses").params.coordinates, [{ x: 0, y: 0 }]);
+  });
+  for (const stage of ["gps", "address"]) {
+    for (const behavior of ["timeout", "error then late success", "duplicate success", "synchronous throw"]) {
+      test(variant.label + ": " + stage + " " + behavior + " settles once and preserves other locations", () => {
+        const data = fixture(); data.trips = [data.trips[0]]; data.logRecords = [gpsAt(data.trips[0])];
+        const app = loadApp(variant, data), original = app.hooks.state.api.call;
+        let late, completions = 0;
+        app.hooks.state.api.call = (method, params, success, failure) => {
+          if (stage === "gps" ? params.typeName !== "LogRecord" : method !== "GetAddresses") return original(method, params, success, failure);
+          const value = stage === "gps" ? data.logRecords : params.coordinates.map(() => ({ formattedAddress: "Resolved address" }));
+          late = () => success(value);
+          if (behavior === "timeout") return;
+          if (behavior === "synchronous throw") throw new Error("Synthetic request failure");
+          if (behavior === "error then late success") { failure(new Error("Synthetic request failure")); success(value); }
+          else { success(value); success(value); }
+        };
+        app.hooks.runActivityReport("2026-10-12", "2026-10-12", () => completions++);
+        app.clock.flush(); assert.equal(completions, 1); assert.equal(app.clock.pending, 0);
+        const before = JSON.stringify(app.hooks.state.activityLocations), html = app.elements["report-output"].innerHTML, calls = app.calls.length;
+        if (late) late(); app.clock.flush();
+        assert.equal(completions, 1); assert.equal(JSON.stringify(app.hooks.state.activityLocations), before);
+        assert.equal(app.elements["report-output"].innerHTML, html); assert.equal(app.calls.length, calls);
+        if (behavior === "duplicate success") assert(html.includes(stage === "gps" ? "Stop -0.1275" : "Resolved address"));
+        else if (stage === "gps") { assert(html.includes("(location lookup failed)")); assert(html.includes("Stop 1")); }
+        else { assert(html.includes("(address lookup failed) 51.50720, -0.12750")); assert(html.includes("(address lookup failed) 50.00000, 1.00000")); }
+      });
+    }
+    test(variant.label + ": superseding a pending " + stage + " request preserves the newer run's controls and snapshot", () => {
+      const data = fixture(); data.trips = [data.trips[0]];
+      const app = loadApp(variant, data), original = app.hooks.state.api.call, pending = [];
+      app.hooks.state.api.call = (method, params, success, failure) => {
+        if (stage === "gps" ? params.typeName === "LogRecord" : method === "GetAddresses") pending.push({ params, success });
+        else original(method, params, success, failure);
+      };
+      app.hooks.runReport(); app.clock.advance(1000); assert.equal(pending.length, 1);
+      app.elements["filter-to"].value = "2026-10-14";
+      app.hooks.runReport(); app.clock.advance(1000); assert.equal(pending.length, 2);
+      const value = stage === "gps" ? [gpsAt(data.trips[0])] : [{ formattedAddress: "New address" }];
+      pending[0].success(value);
+      assert.equal(app.elements["run-report"].disabled, true); assert.equal(app.hooks.state.activityLocations, null);
+      pending[1].success(value); app.clock.flush();
+      assert.equal(app.elements["run-report"].disabled, false); assert.equal(app.hooks.state.activityRange.to, "2026-10-14");
+      const html = app.elements["report-output"].innerHTML, snapshot = app.hooks.state.activityLocations;
+      pending[0].success(value); app.clock.flush();
+      assert.equal(app.elements["report-output"].innerHTML, html); assert.equal(app.hooks.state.activityLocations, snapshot);
+    });
+  }
+  test(variant.label + ": leaving the add-in cancels pending requests and queued dispatch", () => {
+    const app = loadApp(variant), original = app.hooks.state.api.call;
+    let late;
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "LogRecord" ? (late = success) : original(method, params, success, failure);
+    app.hooks.runReport(); assert(late); assert(app.elements["run-report"].disabled);
+    app.context.geotab.addin[variant.privateScope ? "activityReport" : "smartInsights"]().blur();
+    const calls = app.calls.length;
+    late([]); app.clock.flush();
+    assert.equal(app.calls.length, calls); assert.equal(app.hooks.state.activityLocations, null);
+    assert(!app.elements["run-report"].disabled); assert(app.elements["export-activity-btn"].classList.contains("hidden"));
+  });
+  test(variant.label + ": geocoder batches and paces only displayed endpoint coordinates", () => {
+    const data = fixture(), first = data.trips[0];
+    data.trips = Array.from({ length: 801 }, (_, i) => {
+      const start = new Date(Date.UTC(2024, 0, i + 1, 7)), stop = new Date(start.getTime() + 3600000);
+      return { ...first, id: "batch" + i, start: start.toISOString(), stop: stop.toISOString(), stopPoint: { x: -170 + i / 10, y: 50 } };
+    });
+    const app = loadApp(variant, data); runReport(app, variant, "2024-01-01", "2026-03-11");
+    const calls = app.calls.filter(c => c.method === "GetAddresses");
+    assert.deepEqual(calls.map(c => c.params.coordinates.length), [400, 400, 1]);
+    for (let i = 1; i < calls.length; i++) assert(calls[i].at - calls[i - 1].at >= 150);
+  });
+  if (!variant.privateScope) test("parent activity: changing report type away and back cannot resurrect pending Activity output", () => {
+    const app = loadApp(variant), original = app.hooks.state.api.call;
+    app.hooks.setupReports(); let late;
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "LogRecord" ? (late = success) : original(method, params, success, failure);
+    app.hooks.runReport(); assert(late);
+    const select = app.elements["report-type"];
+    select.value = "trips"; select.listeners.change.call(select);
+    select.value = "activity-report"; select.listeners.change.call(select);
+    const html = app.elements["report-output"].innerHTML;
+    late([]); app.clock.flush();
+    assert.equal(app.elements["report-output"].innerHTML, html); assert.equal(app.hooks.state.activityLocations, null);
+    assert(app.elements["export-activity-btn"].classList.contains("hidden")); assert(!app.elements["run-report"].disabled);
+  });
   test(variant.label + ": one vehicle/day combines all historical and unassigned trips", () => {
     const app = loadApp(variant), vehicle = runReport(app, variant).bVan;
     assert.equal(vehicle.driverGroups, undefined); assert.equal(vehicle.days.length, 2);
@@ -344,12 +527,14 @@ for (const variant of variants.filter(v => !v.legacy)) {
     let resolveAddresses, completed = false;
     app.hooks.state.api.call = (method, params, success, failure) => method === "GetAddresses" ? (resolveAddresses = () => call(method, params, success, failure)) : call(method, params, success, failure);
     app.hooks.runActivityReport("2026-10-10", "2026-10-14", () => { completed = true; });
+    app.clock.advance(1000);
     assert(resolveAddresses && !completed); assert.equal(app.hooks.state.activityRange, null); assert.equal(app.hooks.state.activityByDevice, null);
     assert.equal(app.hooks.state.activityAddrMap, null); assert.equal(app.hooks.state.reportData.length, 0); assert(app.elements["export-activity-btn"].classList.contains("hidden"));
     const before = app.downloads.length; app.hooks.exportActivityCsv(); assert.equal(app.downloads.length, before);
     resolveAddresses(); assert(completed); assert.deepEqual({ ...app.hooks.activityReportRange() }, { from: "2026-10-10", to: "2026-10-14" });
     assert.equal(app.hooks.state.reportData.length, 6); assert.equal(app.hooks.state.activityByDevice.bVan.days.length, 2);
-    assert.equal(Object.keys(app.hooks.state.activityAddrMap).length, 6); assert(!app.elements["export-activity-btn"].classList.contains("hidden"));
+    assert.deepEqual(Object.keys(app.hooks.state.activityAddrMap).sort(), ["50.00000,3.00000", "50.00000,5.00000", "50.00000,6.00000"]);
+    assert(!app.elements["export-activity-btn"].classList.contains("hidden"));
   });
   test(variant.label + ": local day and date presets agree in BST", () => {
     const data = fixture(); data.trips = [data.trips[0]]; data.trips[0].start = "2026-06-30T23:30:00Z"; data.trips[0].stop = "2026-07-01T00:30:00Z";
@@ -481,7 +666,7 @@ test("historical driver helpers stay synchronized for Legacy reports", () => {
 
 test("Activity vehicle/day and worksheet helpers stay synchronized with parent", () => {
   const parent = loadApp(variants[2]).hooks, standalone = loadApp(variants[3]).hooks;
-  for (const name of ["getActivityCols", "restoreActivityColumns", "buildActivityByDevice", "activityVehicleIds", "activityReportRange", "activityRangeLabel", "activityTotals", "fmtActivityTime", "activityLastTrip", "activityDayEndpoints", "activityDayElapsed", "activitySummaryColumns", "activitySummaryHeaders", "activitySummaryGridStyle", "activitySummaryNumbers", "activityNumberText", "activityDayValues", "activityVehicleNumbers", "renderActivityReport", "activityWallDate", "addActivityGroupedWorksheet"]) {
+  for (const name of ["getActivityCols", "restoreActivityColumns", "activityCoordinate", "activityLocationKey", "cancelActivityReport", "createActivityRun", "activityLocationCall", "resolveActivityLocations", "buildActivityByDevice", "activityVehicleIds", "activityReportRange", "activityRangeLabel", "activityTotals", "fmtActivityTime", "activityLastTrip", "activityDayEndpoints", "activityDayElapsed", "activitySummaryColumns", "activitySummaryHeaders", "activitySummaryGridStyle", "activitySummaryNumbers", "activityNumberText", "activityDayValues", "activityVehicleNumbers", "renderActivityReport", "activityWallDate", "addActivityGroupedWorksheet"]) {
     assert.equal(parent[name].toString().replace(/\r\n/g, "\n"), standalone[name].toString().replace(/\r\n/g, "\n"), name);
   }
 });

@@ -35,9 +35,16 @@ smart-insights/
 
 ---
 
-## Current version: v2.12.4
+## Current version: v2.12.5
 
 ### Changelog since v2.2.0
+- **v2.12.5** — Activity Report retrieves missing daily departure/
+  arrival coordinates through a device/time-scoped LogRecord boundary search,
+  then resolves displayed endpoints with MyGeotab GetAddresses. One completed
+  location snapshot feeds all outputs and survives vehicle filtering. Guarded
+  requests distinguish lookup failures from missing GPS and ignore obsolete runs.
+  Standalone Activity Report v1.3.5. Local regression checks pass. Published at the
+  user's request for live testing; customer/native verification remains pending.
 - **v2.12.4** — Activity Report Excel export contains only the
   Activity Report worksheet. Removed the Summary worksheet and offscreen summary
   chart generation. Standalone Activity Report v1.3.4.

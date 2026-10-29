@@ -59,7 +59,9 @@ var state = {
   unitSystem:       "Imperial",       // from the logged-in User.isMetric ("Metric" or "Imperial")
   fuelEconomyUnit:  "MPGImperial",    // from the logged-in User.fuelEconomyUnit
   activityByDevice: null,  // Activity Report: { deviceId: { name, trips, drivers } }
-  activityAddrMap:  null   // Activity Report: "lat,lng" -> resolved address string
+  activityAddrMap:  null,  // Activity Report: "lat,lng" -> resolved address string
+  activityLocations: null, // completed endpoint/address snapshot
+  activityRun:      null   // owner of pending Activity callbacks and timers
 };
 
 // ─── Historical trip drivers (keep these helpers in all three report apps) ──
@@ -146,6 +148,7 @@ geotab.addin.smartInsights = function () {
   return {
     initialize: function (api, freshState, callback) {
       try {
+        cancelActivityReport();
         state.api = api;
         if (freshState && freshState.database) {
           state.dbName = freshState.database;
@@ -181,7 +184,7 @@ geotab.addin.smartInsights = function () {
       if (callback) callback();
     },
     focus: function () {},
-    blur:  function () {}
+    blur:  function () { if (state.activityRun) cancelActivityReport(); }
   };
 };
 
@@ -456,6 +459,7 @@ function setupReports() {
   document.getElementById("export-csv").addEventListener("click", exportReportCsv);
   document.getElementById("export-pdf-legacy").addEventListener("click", exportLegacyTripHistoryPdf);
   document.getElementById("report-type").addEventListener("change", function () {
+    cancelActivityReport();
     document.getElementById("report-vehicle").classList.add("hidden");
     document.getElementById("export-csv").classList.add("hidden");
     document.getElementById("export-pdf-legacy").classList.add("hidden");
@@ -512,6 +516,7 @@ function runReport() {
 
   if (type !== "maintenance-upcoming" && (!from || !to)) { alert("Please select a date range."); return; }
 
+  cancelActivityReport();
   btn.disabled = true; btn.textContent = "Loading...";
   output.innerHTML = "<p class='placeholder'>Fetching data...</p>";
   document.getElementById("report-summary").classList.add("hidden");
@@ -1358,10 +1363,144 @@ function restoreActivityColumns(saved) {
   });
 }
 
-function runActivityReport(from, to, done) {
+function activityCoordinate(point) {
+  return point && Number.isFinite(point.x) && Number.isFinite(point.y)
+    && Math.abs(point.x) <= 180 && Math.abs(point.y) <= 90 ? { x: point.x, y: point.y } : null;
+}
+
+function activityLocationKey(trip, role) {
+  var instant = Date.parse(role === "start" ? trip.start : trip.stop);
+  return trip.device && trip.device.id && Number.isFinite(instant)
+    ? trip.device.id + "|" + instant + "|" + role : "";
+}
+
+function cancelActivityReport() {
   state.activityByDevice = null;
   state.activityAddrMap = null;
+  state.activityLocations = null;
   state.activityRange = null;
+  if (state.activityRun) state.activityRun.finish();
+}
+
+function createActivityRun(done) {
+  cancelActivityReport();
+  var run = {
+    api: state.api, database: state.dbName, timers: [], nextRequestAt: 0,
+    current: function () { return state.activityRun === run && state.api === run.api && state.dbName === run.database; },
+    later: function (callback, delay) {
+      run.timers.push(setTimeout(function () { if (run.current()) callback(); }, delay));
+    },
+    finish: function () {
+      if (state.activityRun !== run) return;
+      state.activityRun = null;
+      run.timers.forEach(clearTimeout);
+      done();
+    }
+  };
+  state.activityRun = run;
+  return run;
+}
+
+// Only Activity location requests use this guard. A timeout, SDK throw, duplicate
+// callback or cancelled run cannot advance a queue twice or publish stale data.
+function activityLocationCall(run, method, params, interval, complete) {
+  if (!run.current()) return;
+  var delay = run.nextRequestAt - Date.now();
+  if (delay > 0) { run.later(function () { activityLocationCall(run, method, params, interval, complete); }, delay); return; }
+  run.nextRequestAt = Date.now() + interval;
+  var settled = false;
+  var guard = setTimeout(function () { settle(null, true); }, 15000);
+  run.timers.push(guard);
+  function settle(value, failed) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(guard);
+    if (run.current()) complete(value, failed);
+  }
+  try { run.api.call(method, params, function (value) { settle(value, false); }, function () { settle(null, true); }); }
+  catch (err) { if (settled) throw err; settle(null, true); }
+}
+
+function resolveActivityLocations(byDevice, run, complete) {
+  var endpoints = {}, queries = {}, addresses = {};
+  function addEndpoint(trip, role, sourcePoint) {
+    var key = activityLocationKey(trip, role);
+    if (!key || endpoints[key]) return;
+    var endpoint = endpoints[key] = { point: activityCoordinate(sourcePoint), label: "(location unknown)", status: "missing" };
+    if (endpoint.point) return;
+    var instant = Date.parse(role === "start" ? trip.start : trip.stop);
+    var queryKey = trip.device.id + "|" + instant;
+    if (!queries[queryKey]) queries[queryKey] = { deviceId: trip.device.id, instant: instant, targets: [] };
+    queries[queryKey].targets.push(endpoint);
+  }
+  Object.keys(byDevice).forEach(function (vid) {
+    byDevice[vid].days.forEach(function (day) {
+      var first = day.rows[0], last = activityLastTrip(day);
+      var previous = first.prevTrip && Date.parse(first.prevTrip.stop) <= Date.parse(first.trip.start) ? first.prevTrip.stopPoint : null;
+      addEndpoint(first.trip, "start", previous);
+      addEndpoint(last, "end", last.stopPoint);
+    });
+  });
+  var jobs = Object.keys(queries), offset = 0;
+  function nextPoint() {
+    if (!run.current()) return;
+    if (offset >= jobs.length) { geocode(); return; }
+    var job = queries[jobs[offset++]];
+    // LogRecordSearch interpolates at the requested boundaries. A positive 1ms
+    // window requests the departure/arrival itself, not a guessed nearby point.
+    activityLocationCall(run, "Get", { typeName: "LogRecord", search: {
+      deviceSearch: { id: job.deviceId }, fromDate: new Date(job.instant).toISOString(),
+      toDate: new Date(job.instant + 1).toISOString()
+    }, resultsLimit: 3 }, 100, function (records, failed) {
+      var point = null;
+      failed = failed || !Array.isArray(records);
+      if (!failed) records.some(function (record) {
+        if (!record || Date.parse(record.dateTime) !== job.instant || (record.device && record.device.id !== job.deviceId)) return false;
+        point = activityCoordinate({ x: record.longitude, y: record.latitude });
+        return !!point; // interpolated records legitimately have no id
+      });
+      job.targets.forEach(function (endpoint) { endpoint.point = point; endpoint.status = failed ? "gps-error" : "missing"; });
+      nextPoint();
+    });
+  }
+  function geocode() {
+    var coordinates = {};
+    Object.keys(endpoints).forEach(function (key) {
+      var endpoint = endpoints[key];
+      if (!endpoint.point) {
+        endpoint.label = endpoint.status === "gps-error" ? "(location lookup failed)" : "(location unknown)";
+        return;
+      }
+      var coordinate = coordKey(endpoint.point);
+      if (!coordinates[coordinate]) coordinates[coordinate] = { point: endpoint.point, targets: [] };
+      coordinates[coordinate].targets.push(endpoint);
+    });
+    var keys = Object.keys(coordinates), index = 0;
+    function nextAddresses() {
+      if (!run.current()) return;
+      if (index >= keys.length) { complete({ endpoints: endpoints, addresses: addresses }); return; }
+      var batch = keys.slice(index, index + 400);
+      index += batch.length;
+      activityLocationCall(run, "GetAddresses", { coordinates: batch.map(function (key) { return coordinates[key].point; }) }, 150, function (results, failed) {
+        failed = failed || !Array.isArray(results);
+        batch.forEach(function (key, i) {
+          var address = failed ? null : formatReverseGeocodeAddress(results[i]);
+          addresses[key] = address;
+          coordinates[key].targets.forEach(function (endpoint) {
+            endpoint.label = address || (failed ? "(address lookup failed) " : "") + addressForPoint(endpoint.point, {});
+            endpoint.status = failed ? "address-error" : (address ? "resolved" : "coordinate");
+          });
+        });
+        nextAddresses();
+      });
+    }
+    nextAddresses();
+  }
+  nextPoint();
+}
+
+function runActivityReport(from, to, done) {
+  var run = createActivityRun(done);
   state.reportRaw = [];
   state.reportData = [];
   document.getElementById("export-format").classList.add("hidden");
@@ -1369,31 +1508,36 @@ function runActivityReport(from, to, done) {
   var fromDate = new Date(from + "T00:00:00").toISOString();
   var toDate   = new Date(to   + "T23:59:59").toISOString();
   apiCall("Get", { typeName: "Device", search: {} }, function (devices) {
+    if (!run.current()) return;
     var deviceMap = {};
     devices.forEach(function (d) { deviceMap[d.id] = d.name; });
-    state.deviceMap = deviceMap;
     apiCall("Get", { typeName: "Trip", search: { fromDate: fromDate, toDate: toDate } }, function (trips) {
+      if (!run.current()) return;
       if (!trips.length) {
         document.getElementById("report-output").innerHTML = "<p class='placeholder'>No trips found for this period.</p>";
-        done(); return;
+        run.finish(); return;
       }
       var byDevice = buildActivityByDevice(trips, deviceMap);
-      document.getElementById("report-output").innerHTML = "<p class='placeholder'>Resolving stop addresses…</p>";
-      resolveStopAddresses(byDevice, function (addrMap) {
+      document.getElementById("report-output").innerHTML = "<p class='placeholder'>Resolving GPS locations and addresses…</p>";
+      resolveActivityLocations(byDevice, run, function (locations) {
+        if (!run.current()) return;
+        var addrMap = locations.addresses;
+        state.deviceMap = deviceMap;
         state.reportRaw = trips;
         state.reportData = trips;
         state.activityByDevice = byDevice;
         state.activityAddrMap = addrMap;
+        state.activityLocations = locations;
         state.activityRange = { from: from, to: to };
         populateReportVehicleFilter(trips, deviceMap);
         renderActivityReport(byDevice, addrMap);
         document.getElementById("export-format").classList.remove("hidden");
         document.getElementById("export-activity-btn").classList.remove("hidden");
         saveActivitySettings(from, to);
-        done();
+        run.finish();
       });
-    }, function (err) { reportError(err); done(); });
-  }, function (err) { reportError(err); done(); });
+    }, function (err) { if (run.current()) { reportError(err); run.finish(); } });
+  }, function (err) { if (run.current()) { reportError(err); run.finish(); } });
 }
 
 function buildActivityByDevice(trips, deviceMap) {
@@ -1457,10 +1601,12 @@ function activityLastTrip(block) {
 
 function activityDayEndpoints(block, addrMap) {
   var first = block.rows[0], last = activityLastTrip(block);
+  var locations = state.activityLocations && state.activityLocations.endpoints || {};
+  var start = locations[activityLocationKey(first.trip, "start")], end = locations[activityLocationKey(last, "end")];
   return {
     startDateTime: first.trip.start, endDateTime: last.stop,
-    startTime: fmtActivityTime(first.trip.start), start: startAddressForRow(first, addrMap),
-    endTime: fmtActivityTime(last.stop), end: addressForPoint(last.stopPoint, addrMap)
+    startTime: fmtActivityTime(first.trip.start), start: start ? start.label : startAddressForRow(first, addrMap),
+    endTime: fmtActivityTime(last.stop), end: end ? end.label : addressForPoint(last.stopPoint, addrMap)
   };
 }
 
