@@ -35,9 +35,13 @@ smart-insights/
 
 ---
 
-## Current version: v2.12.7
+## Current version: v2.12.8
 
 ### Changelog since v2.2.0
+- **v2.12.8** — Legacy PDF removes the dedicated Stops column. Trip History is
+  the final column: clickable links on trip rows, plain stop counts on daily,
+  driver-period and vehicle-period totals. Landscape layout, numerical values
+  and the preview/CSV are unchanged. Standalone Legacy v1.4.2.
 - **v2.12.7** — Legacy Trip History PDF includes a separate, clickable Trip History
   column after Stops. Landscape A4 gives all nine columns room within the page;
   full-width rows span all nine. Each trip gets its own MyGeotab URI annotation,

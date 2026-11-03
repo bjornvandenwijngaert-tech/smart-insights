@@ -59,7 +59,13 @@ legacy-trip-report/
 Length selector (Daily / Weekly / Monthly / Custom) auto-fills the from/to date
 inputs; Custom leaves them for manual entry. Optional vehicle filter.
 
-## Current version: v1.4.1
+## Current version: v1.4.2
+
+- PDF now has eight columns: Trip History is the final column, with trip links
+  on detail rows and plain "X stops" counts on daily, driver and vehicle totals.
+  No separate Stops column; landscape A4, numerical values and preview unchanged.
+
+### v1.4.1
 
 - PDF uses landscape A4 and nine columns, with a separate Trip History column
   after Stops. Each trip has a real PDF URI annotation pointing to the same
@@ -164,6 +170,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.4.1` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.4.2` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).
