@@ -769,7 +769,7 @@ function exportLegacyTripHistoryPdf() {
   var from = document.getElementById("filter-from").value;
   var to   = document.getElementById("filter-to").value;
 
-  var doc    = new jspdf.jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  var doc    = new jspdf.jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   var pageW  = doc.internal.pageSize.getWidth();
   var pageH  = doc.internal.pageSize.getHeight();
   var margin = 14;
@@ -826,7 +826,7 @@ function exportLegacyTripHistoryPdf() {
   ], yPos);
   yPos += 24;
 
-  var headers = [["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Stops"]];
+  var headers = [["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Stops", "Trip History"]];
 
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
@@ -846,7 +846,7 @@ function exportLegacyTripHistoryPdf() {
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
 
-      body.push([{ content: block.date + "  Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap), colSpan: 8, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
+      body.push([{ content: block.date + "  Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap), colSpan: 9, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
 
       if (prevTrip) {
         // No duration on this row — the gap to the previous trip is overnight/
@@ -855,7 +855,7 @@ function exportLegacyTripHistoryPdf() {
           fmtTime(firstTrip.start),
           { content: "(Ignition On)", colSpan: 4, styles: { textColor: [217, 119, 6] } },
           "\u2014",
-          "", ""
+          "", "", ""
         ]);
       }
 
@@ -864,6 +864,7 @@ function exportLegacyTripHistoryPdf() {
         var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
         var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
         var stopMins  = legacyStopMins(t);
+        var url = tripHistoryUrl(vid, t);
         body.push([
           fmtTime(t.start),
           fmtDist(t.distance, 2),
@@ -872,13 +873,14 @@ function exportLegacyTripHistoryPdf() {
           fmtTime(t.stop),
           fmtDurPrecise(idleMins),
           stopMins != null ? fmtDurPrecise(stopMins) : "\u2014",
-          ""
+          "",
+          { content: url ? "Trip History" : "\u2014", tripHistoryUrl: url, styles: { textColor: [0, 90, 158] } }
         ]);
       });
 
       var totalStyles = { fontStyle: "bold", fillColor: [245, 245, 245] };
       function addTotal(label, trips) {
-        body.push(legacyTotalCells(label, trips).map(function (cell) { return { content: cell, styles: totalStyles }; }));
+        body.push(legacyTotalCells(label, trips).concat([""]).map(function (cell) { return { content: cell, styles: totalStyles }; }));
       }
       addTotal(block.date + " Total", block.rows.map(function (r) { return r.trip; }));
       if (dayIndex === dayBlocks.length - 1) {
@@ -889,12 +891,21 @@ function exportLegacyTripHistoryPdf() {
 
       doc.autoTable({
         startY: yPos,
-        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + block.date, colSpan: 8 }]].concat(headers),
+        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + block.date, colSpan: 9 }]].concat(headers),
         body: body,
         margin: { left: margin, right: margin },
         styles: { fontSize: 8, cellPadding: 2.2, textColor: [45, 55, 72] },
         headStyles: { fillColor: [0, 120, 212], textColor: 255, fontStyle: "bold", fontSize: 8 },
-        columnStyles: { 7: { cellWidth: 16 } }
+        columnStyles: { 7: { cellWidth: 14 }, 8: { cellWidth: 22 } },
+        didDrawCell: function (data) {
+          var url = data.cell.raw && data.cell.raw.tripHistoryUrl;
+          // AutoTable retains raw metadata on split rows; do not link blank
+          // continuation cells, headings, synthetic rows or total rows.
+          if (data.section === "body" && data.column.index === 8 && url &&
+              data.cell.text.some(function (text) { return text.trim().length > 0; })) {
+            doc.link(data.cell.x, data.cell.y, data.cell.width, data.cell.height, { url: url });
+          }
+        }
       });
       yPos = doc.lastAutoTable.finalY + 6;
       if (yPos > pageH - 30) { doc.addPage(); yPos = 16; }

@@ -35,9 +35,14 @@ smart-insights/
 
 ---
 
-## Current version: v2.12.6
+## Current version: v2.12.7
 
 ### Changelog since v2.2.0
+- **v2.12.7** — Legacy Trip History PDF includes a separate, clickable Trip History
+  column after Stops. Landscape A4 gives all nine columns room within the page;
+  full-width rows span all nine. Each trip gets its own MyGeotab URI annotation,
+  with no links on totals, synthetic rows or blank page-split continuations.
+  Distance, Duration and totals are unchanged. Standalone Legacy v1.4.1.
 - **v2.12.6** — Legacy Trip History has separate Distance and Duration (driving
   time) columns in the preview and PDF, with daily, driver-period and
   vehicle-period footers. Totals sum canonical kilometres/minutes before display

@@ -59,7 +59,12 @@ legacy-trip-report/
 Length selector (Daily / Weekly / Monthly / Custom) auto-fills the from/to date
 inputs; Custom leaves them for manual entry. Optional vehicle filter.
 
-## Current version: v1.4.0
+## Current version: v1.4.1
+
+- PDF uses landscape A4 and nine columns, with a separate Trip History column
+  after Stops. Each trip has a real PDF URI annotation pointing to the same
+  vehicle/day/trip deep link as the preview. Missing-host, totals, synthetic and
+  blank continuation cells do not create annotations. Numerical fields unchanged.
 
 - The viewer's `User.isMetric` is resolved during initialization before the report
   becomes available, matching Smart Insights. Canonical `Trip.distance` stays in
@@ -159,6 +164,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.4.0` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.4.1` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).

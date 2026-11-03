@@ -81,14 +81,29 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
   class FakeBlob { constructor(parts, options) { this.parts = parts; this.type = options.type; } }
   class FakePdf {
     constructor(options) {
-      this.tables = []; this.texts = []; this.pages = 1;
+      this.tables = []; this.texts = []; this.links = []; this.pages = 1;
       this.internal = { pageSize: { getWidth: () => options.orientation === "landscape" ? 297 : 210, getHeight: () => options.orientation === "landscape" ? 210 : 297 }, getNumberOfPages: () => this.pages };
       pdfs.push(this);
     }
     setFillColor() {} rect() {} setTextColor() {} setFontSize() {} setFont() {} roundedRect() {}
     text(value) { this.texts.push(value); } splitTextToSize(value) { return [value]; }
     addPage() { this.pages++; } setPage() {}
-    autoTable(options) { this.tables.push(options); this.lastAutoTable = { finalY: 80 }; }
+    link(x, y, width, height, options) { this.links.push({ x, y, width, height, url: options.url }); }
+    autoTable(options) {
+      this.tables.push(options); this.lastAutoTable = { finalY: 80 };
+      if (options.didDrawCell) {
+        for (const section of ["head", "body"]) {
+          for (const row of options[section] || []) {
+            let column = 0;
+            for (const raw of row) {
+              options.didDrawCell({ section, column: { index: column }, cell: { raw,
+                text: [String(typeof raw === "object" ? raw.content : raw)], x: column * 20, y: 80, width: 20, height: 10 } });
+              column += typeof raw === "object" && raw.colSpan || 1;
+            }
+          }
+        }
+      }
+    }
     save(filename) { this.filename = filename; }
   }
   class FakeWorkbook {
@@ -184,8 +199,8 @@ for (const variant of variants.filter(v => v.legacy)) {
       app.hooks.exportReportCsv(); const csv = parseCsv(app.downloads.at(-1));
       assert.equal(csv.length, 2); assert.equal(csv[0][4], "Distance (" + unit + ")"); assert.equal(csv[1][4], distance);
       app.hooks.exportLegacyTripHistoryPdf(); const pdf = app.pdfs[0], table = pdf.tables[0];
-      assert.deepEqual(Array.from(table.head[1]), ["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Stops"]);
-      assert.equal(table.head[0][0].colSpan, 8); assert.equal(table.body[0][0].colSpan, 8);
+      assert.deepEqual(Array.from(table.head[1]), ["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Stops", "Trip History"]);
+      assert.equal(table.head[0][0].colSpan, 9); assert.equal(table.body[0][0].colSpan, 9);
       assert.equal(table.body[1][1], distance + " " + unit); assert.equal(table.body[1][2], "1h 00m 00s");
       assert(pdf.texts.includes("Total Distance Travelled (" + unit + ")"));
       assert.equal(data.trips[0].distance, 50, "Never convert the canonical Trip.distance in place");
@@ -203,10 +218,14 @@ for (const variant of variants.filter(v => v.legacy)) {
     assert.equal(rows.filter(r => /^2026-.* Total$/.test(r[0])).length, 5);
     app.hooks.exportLegacyTripHistoryPdf();
     const pdfRows = app.pdfs[0].tables.flatMap(t => Array.from(t.body, row => Array.from(row, c => typeof c === "object" ? c.content : c)));
-    for (const label of ["Driver Total", "Vehicle Total"]) assert.deepEqual(pdfRows.filter(r => r[0] === label), rows.filter(r => r[0] === label));
+    for (const label of ["Driver Total", "Vehicle Total"]) {
+      const totals = pdfRows.filter(r => r[0] === label);
+      assert(totals.every(r => r[8] === ""), "PDF totals never contain trip links");
+      assert.deepEqual(totals.map(r => r.slice(0, 8)), rows.filter(r => r[0] === label));
+    }
     for (const table of app.pdfs[0].tables) {
-      for (const row of table.body) assert.equal(row.reduce((sum, c) => sum + (typeof c === "object" && c.colSpan || 1), 0), 8, "PDF spans cover all columns");
-      assert.equal(table.columnStyles[7].cellWidth, 16);
+      for (const row of table.body) assert.equal(row.reduce((sum, c) => sum + (typeof c === "object" && c.colSpan || 1), 0), 9, "PDF spans cover all columns");
+      assert.equal(table.columnStyles[7].cellWidth, 14); assert.equal(table.columnStyles[8].cellWidth, 22);
     }
     app.hooks.filterReportByVehicle("bOther");
     assert.deepEqual(legacyHtmlRows(app.elements["report-output"].innerHTML).filter(r => r[0] === "Vehicle Total").map(r => r[1]), ["5.00 km"]);
@@ -221,6 +240,28 @@ for (const variant of variants.filter(v => v.legacy)) {
     const row = legacyHtmlRows(app.elements["report-output"].innerHTML).find(r => r[0] === "Vehicle Total");
     assert(row, "A vehicle-period total must be present");
     assert.equal(row[1], "0.01 mi", "Convert and round the sum, not rounded trip cells"); assert.equal(row[2], "01m 02s");
+  });
+  test(variant.label + ": PDF trip-history column has real per-trip URI annotations", () => {
+    const app = loadApp(variant); runReport(app, variant); app.hooks.exportLegacyTripHistoryPdf();
+    const pdf = app.pdfs[0];
+    const expected = app.data.trips.map(t => app.hooks.tripHistoryUrl(t.device.id, t)).sort();
+    assert.deepEqual(pdf.links.map(link => link.url).sort(), expected);
+    assert.equal(pdf.internal.pageSize.getWidth(), 297, "Landscape leaves room for all nine columns");
+    assert(pdf.links.every(link => link.width > 0 && link.height > 0 && !link.url.includes("&#39;")), "Clickable PDF links use complete raw URLs");
+    const options = pdf.tables[0], raw = options.body.find(row => row[8] && row[8].tripHistoryUrl)[8];
+    assert.equal(raw.content, "Trip History");
+    for (const [section, column, text] of [["head", 8, ["Trip History"]], ["body", 7, ["Trip History"]], ["body", 8, []], ["body", 8, [""]], ["body", 8, [" "]]]) {
+      options.didDrawCell({ section, column: { index: column }, cell: { raw, text, x: 10, y: 10, width: 22, height: 10 } });
+    }
+    assert.equal(pdf.links.length, expected.length, "Headers, other columns and blank page-split continuations do not create links");
+    app.hooks.filterReportByVehicle("bOther"); app.hooks.exportLegacyTripHistoryPdf();
+    assert.equal(app.pdfs[1].links.length, 1); assert.equal(app.pdfs[1].links[0].url, app.hooks.tripHistoryUrl("bOther", app.data.trips[5]));
+  });
+  test(variant.label + ": PDF never creates unusable trip-history links without a host", () => {
+    const app = loadApp(variant); runReport(app, variant); app.hooks.state.server = "";
+    app.hooks.exportLegacyTripHistoryPdf(); assert.equal(app.pdfs[0].links.length, 0);
+    const trips = app.pdfs[0].tables.flatMap(table => Array.from(table.body)).filter(row => row[8] && typeof row[8] === "object" && "tripHistoryUrl" in row[8]);
+    assert.equal(trips.length, app.data.trips.length); assert(trips.every(row => row[8].content === "\u2014"));
   });
   for (const metric of [true, false]) {
     for (const wrapped of [true, false]) {
