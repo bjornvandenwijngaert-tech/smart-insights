@@ -35,9 +35,16 @@ smart-insights/
 
 ---
 
-## Current version: v2.12.5
+## Current version: v2.12.6
 
 ### Changelog since v2.2.0
+- **v2.12.6** — Legacy Trip History has separate Distance and Duration (driving
+  time) columns in the preview and PDF, with daily, driver-period and
+  vehicle-period footers. Totals sum canonical kilometres/minutes before display
+  conversion and retain seconds; overnight-stop exclusions are unchanged. The
+  standalone Legacy v1.4.0 now reads the viewer's `User.isMetric`, like the parent,
+  instead of always showing miles. CSV remains one row per trip with separate
+  distance/driving-duration fields. Run `node --test tests/trip-report-drivers.test.cjs`.
 - **v2.12.5** — Activity Report retrieves missing daily departure/
   arrival coordinates through a device/time-scoped LogRecord boundary search,
   then resolves displayed endpoints with MyGeotab GetAddresses. One completed
@@ -420,9 +427,9 @@ events (`MAP_EVENT_CAP`), batched 50 per multiCall.
 ## Repo / deployment
 - GitHub repo: bjornvandenwijngaert-tech/smart-insights
 - Deployed via GitHub Pages
-- **Push is done MANUALLY by Bjorn** each time a new version is created. GIA does not
-  push; just tell GIA when a push has been done so context stays accurate. (This local
-  folder has no git remote configured — the push happens outside it.)
+- Git remote is configured; the default branch is `main`. Publish only when the
+  user explicitly requests it. For v2.12.6 the user requested a direct push to
+  `main`, without an MR or CR. Preserve unrelated local work when publishing.
 - config.json points directly to the Pages URL
 - Cache-bust: all asset URLs include a `?v=X.Y.Z` query string — **increment on each release**
   (this maintenance-removal change needs a version bump + cache-bust before it takes effect)

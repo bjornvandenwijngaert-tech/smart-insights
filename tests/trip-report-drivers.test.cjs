@@ -163,6 +163,100 @@ function parseCsv(blob) {
   row.push(value); rows.push(row); return rows;
 }
 
+function legacyHtmlRows(html) {
+  return Array.from(html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g), row =>
+    Array.from(row[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/g), cell => cell[1].replace(/<[^>]+>/g, "").trim()));
+}
+
+for (const variant of variants.filter(v => v.legacy)) {
+  for (const metric of [true, false]) {
+    test(variant.label + ": legacy unit conversion and separate columns " + (metric ? "metric" : "imperial"), () => {
+      const data = fixture(); data.trips = [data.trips[0]]; data.trips[0].distance = 50;
+      const app = loadApp(variant, data); app.hooks.state.unitSystem = metric ? "Metric" : "Imperial";
+      runReport(app, variant);
+      const unit = metric ? "km" : "mi", distance = metric ? "50.00" : "31.07";
+      assert(app.elements["report-output"].innerHTML.includes(distance + " " + unit), "50 canonical km must be displayed as " + distance + " " + unit);
+      const rows = legacyHtmlRows(app.elements["report-output"].innerHTML);
+      assert.deepEqual(rows[0], ["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Trip History"]);
+      assert.equal(rows[2][1], distance + " " + unit); assert.equal(rows[2][2], "1h 00m 00s");
+      assert.equal(rows[3][1], distance + " " + unit); assert.equal(rows[3][2], "1h 00m 00s");
+      assert(app.elements["report-summary"].innerHTML.includes((metric ? "50" : "31") + "<span class='summary-unit'>" + unit));
+      app.hooks.exportReportCsv(); const csv = parseCsv(app.downloads.at(-1));
+      assert.equal(csv.length, 2); assert.equal(csv[0][4], "Distance (" + unit + ")"); assert.equal(csv[1][4], distance);
+      app.hooks.exportLegacyTripHistoryPdf(); const pdf = app.pdfs[0], table = pdf.tables[0];
+      assert.deepEqual(Array.from(table.head[1]), ["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Stops"]);
+      assert.equal(table.head[0][0].colSpan, 8); assert.equal(table.body[0][0].colSpan, 8);
+      assert.equal(table.body[1][1], distance + " " + unit); assert.equal(table.body[1][2], "1h 00m 00s");
+      assert(pdf.texts.includes("Total Distance Travelled (" + unit + ")"));
+      assert.equal(data.trips[0].distance, 50, "Never convert the canonical Trip.distance in place");
+    });
+  }
+  test(variant.label + ": legacy totals cover day, driver period and vehicle period once", () => {
+    const app = loadApp(variant); runReport(app, variant);
+    const rows = legacyHtmlRows(app.elements["report-output"].innerHTML);
+    const driver = rows.filter(r => r[0] === "Driver Total");
+    const vehicle = rows.filter(r => r[0] === "Vehicle Total");
+    assert.deepEqual(driver.map(r => r.slice(1, 3)), [["40.00 km", "2h 00m 00s"], ["60.00 km", "2h 00m 00s"], ["5.00 km", "1h 00m 00s"], ["5.00 km", "1h 00m 00s"]]);
+    assert.deepEqual(vehicle.map(r => r.slice(1, 3)), [["105.00 km", "5h 00m 00s"], ["5.00 km", "1h 00m 00s"]]);
+    assert.equal(vehicle[0][6], "3h 00m 00s", "Overnight and unknown stop durations remain excluded");
+    assert.equal(vehicle[0][7], "3 stops");
+    assert.equal(rows.filter(r => /^2026-.* Total$/.test(r[0])).length, 5);
+    app.hooks.exportLegacyTripHistoryPdf();
+    const pdfRows = app.pdfs[0].tables.flatMap(t => Array.from(t.body, row => Array.from(row, c => typeof c === "object" ? c.content : c)));
+    for (const label of ["Driver Total", "Vehicle Total"]) assert.deepEqual(pdfRows.filter(r => r[0] === label), rows.filter(r => r[0] === label));
+    for (const table of app.pdfs[0].tables) {
+      for (const row of table.body) assert.equal(row.reduce((sum, c) => sum + (typeof c === "object" && c.colSpan || 1), 0), 8, "PDF spans cover all columns");
+      assert.equal(table.columnStyles[7].cellWidth, 16);
+    }
+    app.hooks.filterReportByVehicle("bOther");
+    assert.deepEqual(legacyHtmlRows(app.elements["report-output"].innerHTML).filter(r => r[0] === "Vehicle Total").map(r => r[1]), ["5.00 km"]);
+    app.hooks.filterReportByVehicle(""); assert.equal(app.elements["report-output"].innerHTML.includes("105.00 km"), true);
+  });
+  test(variant.label + ": legacy totals retain seconds, driving fallback and unrounded km", () => {
+    const data = fixture(); data.trips = data.trips.slice(0, 2);
+    data.trips[0].distance = 0.006; data.trips[1].distance = 0.006;
+    data.trips[0].drivingDuration = "00:00:31"; data.trips[1].drivingDuration = null;
+    data.trips[1].stop = "2026-10-12T09:00:31Z";
+    const app = loadApp(variant, data); app.hooks.state.unitSystem = "Imperial"; runReport(app, variant);
+    const row = legacyHtmlRows(app.elements["report-output"].innerHTML).find(r => r[0] === "Vehicle Total");
+    assert(row, "A vehicle-period total must be present");
+    assert.equal(row[1], "0.01 mi", "Convert and round the sum, not rounded trip cells"); assert.equal(row[2], "01m 02s");
+  });
+  for (const metric of [true, false]) {
+    for (const wrapped of [true, false]) {
+      test(variant.label + ": viewer profile wins over database and driver units " + metric + "/" + wrapped, () => {
+        const app = loadApp(variant); app.hooks.state.unitSystem = metric ? "Imperial" : "Metric";
+        const requests = [];
+        app.hooks.state.api = { getSession(cb) { cb(wrapped ? { credentials: { userName: "viewer@example.test" } } : { userName: "viewer@example.test" }); },
+          call(method, params, success) { requests.push(params); success([{ name: "viewer@example.test", isMetric: metric }]); } };
+        let done = 0; app.hooks.loadUserUnits(() => done++); app.clock.flush();
+        assert.equal(done, 1); assert.equal(app.hooks.distUnit(), metric ? "km" : "mi");
+        assert.equal(app.hooks.fmtDist(50, 2), metric ? "50.00 km" : "31.07 mi");
+        assert.deepEqual(JSON.parse(JSON.stringify(requests)), [{ typeName: "User", search: { name: "viewer@example.test" } }]);
+      });
+    }
+  }
+}
+
+test("standalone legacy: initialization waits for viewer's regional preferences", () => {
+  const app = loadApp(variants[0]); app.hooks.state.unitSystem = "Imperial";
+  app.elements.main = app.context.document.getElementById("main"); app.elements.main.classList.add("hidden");
+  let completeUser, initialized = 0;
+  const api = { getSession(cb) { cb({ userName: "viewer@example.test" }); }, call(method, params, success) { completeUser = success; } };
+  app.context.geotab.addin.legacyTripHistory().initialize(api, { database: "demo" }, () => initialized++);
+  assert.equal(initialized, 0); assert(app.elements.main.classList.contains("hidden"));
+  completeUser([{ name: "viewer@example.test", isMetric: true }]);
+  assert.equal(initialized, 1); assert(!app.elements.main.classList.contains("hidden"));
+  assert.equal(app.hooks.distUnit(), "km"); app.clock.flush();
+});
+
+test("Legacy aggregation, layout and distance helpers stay synchronized", () => {
+  const standalone = loadApp(variants[0]).hooks, parent = loadApp(variants[1]).hooks;
+  for (const name of ["legacyTotals", "legacyTotalCells", "legacyHtmlTotal", "renderLegacyTripHistoryOutput", "exportLegacyTripHistoryPdf", "isMetric", "distVal", "distUnit", "fmtDist"]) {
+    assert.equal(standalone[name].toString().replace(/\r\n/g, "\n"), parent[name].toString().replace(/\r\n/g, "\n"), name);
+  }
+});
+
 // Synthetic control-flow fixture in the documented LogRecord shape. This does
 // not stand in for the required authenticated producer/consumer smoke check.
 function gpsAt(trip, role = "start", longitude = -0.1275, latitude = 51.5072) {

@@ -17,6 +17,7 @@
 // ─── State ─────────────────────────────────────────────────────────────────
 var state = {
   api:            null,
+  unitSystem:     "Imperial", // viewer's User.isMetric, not the trip driver's setting
   reportRaw:      [],
   reportData:     [],
   deviceMap:      {},
@@ -122,12 +123,15 @@ geotab.addin.legacyTripHistory = function () {
         }
         resolveHost();
         setupReports();
-        document.getElementById("loading").classList.add("hidden");
-        document.getElementById("main").classList.remove("hidden");
+        loadUserUnits(function () {
+          document.getElementById("loading").classList.add("hidden");
+          document.getElementById("main").classList.remove("hidden");
+          if (callback) callback();
+        });
       } catch (err) {
         showError("Init error: " + err.message);
+        if (callback) callback();
       }
-      if (callback) callback();
     },
     focus: function () {},
     blur:  function () {}
@@ -223,10 +227,65 @@ function fmtDurPrecise(mins) {
   var ss = (s < 10 ? "0" : "") + s;
   return h > 0 ? h + "h " + mm + "m " + ss + "s" : mm + "m " + ss + "s";
 }
-// Trip.Distance is in KILOMETRES per the MyGeotab SDK (confirmed against live
-// data: a multi-hour drive showed ~0.01 mi when distance was wrongly treated as
-// metres). 1 km = 0.621371 miles.
-function milesFromDistance(km) { return (km || 0) * 0.621371; }
+// Same viewer preference resolution as Smart Insights. API distances stay in km;
+// only display/export values are converted. Never use the trip driver's settings.
+var MI_PER_KM = 0.621371;
+function loadUserUnits(cb) {
+  var done = false;
+  function finish() { if (!done) { done = true; cb(); } }
+
+  function applyUser(user) {
+    if (user && typeof user.isMetric === "boolean") {
+      state.unitSystem = user.isMetric ? "Metric" : "Imperial";
+      state.fuelEconomyUnit = user.fuelEconomyUnit ||
+        (user.isMetric ? "LitersPer100Km" : "MPGImperial");
+      finish();
+      return true;
+    }
+    return false;
+  }
+
+  // Database-wide fallback. Used only when we cannot identify the current user.
+  function fallbackToSystemSettings() {
+    apiCall("Get", { typeName: "SystemSettings" }, function (settings) {
+      if (settings && settings[0] && settings[0].measurementSystem) {
+        state.unitSystem = settings[0].measurementSystem; // "Metric" or "Imperial"
+        state.fuelEconomyUnit = state.unitSystem === "Metric" ? "LitersPer100Km" : "MPGImperial";
+      }
+      finish();
+    }, finish);
+  }
+
+  function fetchUserByName(userName) {
+    if (!userName) { fallbackToSystemSettings(); return; }
+    apiCall("Get", { typeName: "User", search: { name: userName } }, function (users) {
+      if (!users || !users.length || !applyUser(users[0])) fallbackToSystemSettings();
+    }, fallbackToSystemSettings);
+  }
+
+  // getSession can return credentials directly or wrapped in .credentials.
+  try {
+    if (state.api && typeof state.api.getSession === "function") {
+      var settled = false;
+      var guard = setTimeout(function () {
+        if (!settled) { settled = true; fallbackToSystemSettings(); }
+      }, 8000);
+      state.api.getSession(function (a) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(guard);
+        var creds = (a && a.credentials) || a || {};
+        fetchUserByName(creds.userName || creds.username);
+      });
+      return;
+    }
+  } catch (e) { /* fall through */ }
+  fallbackToSystemSettings();
+}
+function isMetric() { return state.unitSystem === "Metric"; }
+function distUnit()      { return isMetric() ? "km" : "mi"; }
+function distVal(km)     { return isMetric() ? (km || 0) : (km || 0) * MI_PER_KM; }
+function fmtDist(km, dp) { return distVal(km).toFixed(dp == null ? 1 : dp) + " " + distUnit(); }
 
 // ─── Overnight parking ─────────────────────────────────────────────────────
 // Trip.StopDuration runs from the engine stopping to the NEXT trip's start, so a
@@ -509,7 +568,7 @@ function runLegacyTripHistoryReport(from, to, done) {
         var avgStop    = numStops ? totalStop / numStops : 0;
 
         showReportSummary([
-          summaryCard("Total Distance",         milesFromDistance(totalDistM).toFixed(0), "mi"),
+          summaryCard("Total Distance",         distVal(totalDistM).toFixed(0), distUnit()),
           summaryCard("Total Stop Duration",    fmtDurWhole(totalStop), ""),
           summaryCard("Total Idle Time",        fmtDurWhole(totalIdle), ""),
           summaryCard("Total Travel Duration",  fmtDurWhole(totalDrive), ""),
@@ -528,6 +587,28 @@ function runLegacyTripHistoryReport(from, to, done) {
 }
 
 // ─── Render (in-app preview) ───────────────────────────────────────────────
+// Sum canonical km/minutes before any rounding; shared by HTML and PDF footers.
+function legacyTotals(trips) {
+  return trips.reduce(function (total, t) {
+    var drive = parseDurationToMins(t.drivingDuration);
+    var stop = legacyStopMins(t);
+    total.distance += t.distance || 0;
+    total.driving += drive != null ? drive : durationMins(t.start, t.stop);
+    total.idle += parseDurationToMins(t.idlingDuration) || 0;
+    if (stop != null) { total.stopped += stop; total.stops++; }
+    return total;
+  }, { distance: 0, driving: 0, idle: 0, stopped: 0, stops: 0 });
+}
+function legacyTotalCells(label, trips) {
+  var total = legacyTotals(trips);
+  return [label, fmtDist(total.distance, 2), fmtDurPrecise(total.driving), "", "",
+    fmtDurPrecise(total.idle), fmtDurPrecise(total.stopped), total.stops + " stops"];
+}
+function legacyHtmlTotal(label, trips) {
+  return "<tr style='font-weight:700;background:var(--surface-2)'>" + legacyTotalCells(label, trips).map(function (cell) {
+    return "<td>" + esc(cell) + "</td>";
+  }).join("") + "</tr>";
+}
 function renderLegacyTripHistoryOutput(byDevice, addrMap) {
   var output = document.getElementById("report-output");
   var vids = Object.keys(byDevice);
@@ -535,10 +616,10 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
 
   output.innerHTML = vids.map(function (vid) {
     var v = byDevice[vid];
-    var driverHtml = v.driverGroups.map(function (driverGroup) {
+    var driverHtml = v.driverGroups.map(function (driverGroup, driverIndex) {
     var dayBlocks = driverGroup.days;
 
-    var dayHtml = dayBlocks.map(function (block) {
+    var dayHtml = dayBlocks.map(function (block, dayIndex) {
       var rowsHtml = block.rows.map(function (r) {
         var t = r.trip;
         var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
@@ -547,7 +628,8 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
         var stopStr   = stopMins != null ? fmtDurPrecise(stopMins) : "\u2014";
         return "<tr>" +
           "<td>" + fmtTime(t.start) + "</td>" +
-          "<td>" + milesFromDistance(t.distance).toFixed(2) + " mi<br><span style='color:var(--text-muted);font-size:11px'>" + fmtDurPrecise(driveMins) + "</span></td>" +
+          "<td>" + fmtDist(t.distance, 2) + "</td>" +
+          "<td>" + fmtDurPrecise(driveMins) + "</td>" +
           "<td>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>" +
           "<td>" + fmtTime(t.stop) + "</td>" +
           "<td>" + fmtDurPrecise(idleMins) + "</td>" +
@@ -556,28 +638,29 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
         "</tr>";
       }).join("");
 
-      var dayDistM = block.rows.reduce(function (s, r) { return s + (r.trip.distance || 0); }, 0);
-      var dayDrive = block.rows.reduce(function (s, r) { var dm = parseDurationToMins(r.trip.drivingDuration); return s + (dm != null ? dm : durationMins(r.trip.start, r.trip.stop)); }, 0);
-      var dayIdle  = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.idlingDuration) || 0); }, 0);
-      var dayCount = block.rows.filter(function (r) { return legacyStopMins(r.trip) != null; });
-      var dayStop  = dayCount.reduce(function (s, r) { return s + legacyStopMins(r.trip); }, 0);
+      var totalsHtml = legacyHtmlTotal(block.date + " Total", block.rows.map(function (r) { return r.trip; }));
+      if (dayIndex === dayBlocks.length - 1) {
+        var driverTrips = [].concat.apply([], dayBlocks.map(function (day) { return day.rows.map(function (r) { return r.trip; }); }));
+        totalsHtml += legacyHtmlTotal("Driver Total", driverTrips);
+        if (driverIndex === v.driverGroups.length - 1) totalsHtml += legacyHtmlTotal("Vehicle Total", v.trips);
+      }
 
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
-      var startingFromHtml = "<tr><td colspan='7' style='font-weight:600;background:var(--surface-2)'>" + block.date + " \u2014 Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
+      var startingFromHtml = "<tr><td colspan='8' style='font-weight:600;background:var(--surface-2)'>" + block.date + " \u2014 Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
       // "(Ignition On)" marks the day's first drive. We deliberately do NOT show a
       // duration here: the gap to the previous trip is overnight/parked time, not
       // idle, and Trip data has no pre-drive idle figure to show instead.
       var ignitionHtml = prevTrip
         // No Trip History cell here: this synthetic row marks the same trip whose
         // own row, directly below, already carries the link.
-        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='3'>(Ignition On)</td><td>\u2014</td><td></td><td></td></tr>"
+        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='4'>(Ignition On)</td><td>\u2014</td><td></td><td></td></tr>"
         : "";
 
       return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table'>" +
-        "<thead><tr><th>Start Time</th><th>Distance / Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th><th>Trip History</th></tr></thead>" +
+        "<thead><tr><th>Start Time</th><th>Distance</th><th>Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th><th>Trip History</th></tr></thead>" +
         "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml +
-        "<tr style='font-weight:700;background:var(--surface-2)'><td>" + block.date + " Total</td><td>" + milesFromDistance(dayDistM).toFixed(2) + " mi in " + fmtDurWhole(dayDrive) + "</td><td></td><td>" + dayCount.length + " stops</td><td>" + fmtDurWhole(dayIdle) + "</td><td>" + fmtDurWhole(dayStop) + "</td><td></td></tr>" +
+        totalsHtml +
         "</tbody></table></div>";
     }).join("");
 
@@ -616,7 +699,7 @@ function updateLegacyReportSummary(trips) {
   var counted = trips.filter(function (t) { return legacyStopMins(t) != null; });
   var stopped = counted.reduce(function (s, t) { return s + legacyStopMins(t); }, 0);
   showReportSummary([
-    summaryCard("Total Distance", milesFromDistance(distance).toFixed(0), "mi"),
+    summaryCard("Total Distance", distVal(distance).toFixed(0), distUnit()),
     summaryCard("Total Stop Duration", fmtDurWhole(stopped), ""),
     summaryCard("Total Idle Time", fmtDurWhole(idle), ""),
     summaryCard("Total Travel Duration", fmtDurWhole(driving), ""),
@@ -639,7 +722,7 @@ function exportReportCsv() {
   var data = state.reportData;
   if (!data || !data.length) return;
   var addrMap = state.legacyAddrMap || {};
-  var rows = [["Vehicle", "Driver", "Date", "Start Time", "Distance (mi)", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"]];
+  var rows = [["Vehicle", "Driver", "Date", "Start Time", "Distance (" + distUnit() + ")", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"]];
   var byDevice = buildLegacyByDevice(data, state.deviceMap);
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
@@ -652,7 +735,7 @@ function exportReportCsv() {
       var stopMins  = legacyStopMins(t);
       rows.push([
         v.name, driverGroup.name, block.date, fmtTime(t.start),
-        milesFromDistance(t.distance).toFixed(2), fmtDurPrecise(driveMins),
+        distVal(t.distance).toFixed(2), fmtDurPrecise(driveMins),
         addressForPoint(t.stopPoint, addrMap), fmtTime(t.stop),
         fmtDurPrecise(idleMins), stopMins != null ? fmtDurPrecise(stopMins) : ""
       ]);
@@ -707,6 +790,7 @@ function exportLegacyTripHistoryPdf() {
   doc.text("Report Totals for: " + from + " \u2013 " + to, margin + 3, yPos + 5.5);
   yPos += 14;
 
+  // Report-wide KPIs across all vehicles
   var allTrips = [];
   Object.keys(byDevice).forEach(function (vid) { allTrips = allTrips.concat(byDevice[vid].trips); });
   var totalDistM = allTrips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
@@ -736,13 +820,13 @@ function exportLegacyTripHistoryPdf() {
   ], yPos);
   yPos += 20;
   drawKpiRow([
-    { label: "Total Distance Travelled (miles)", value: milesFromDistance(totalDistM).toFixed(0) },
+    { label: "Total Distance Travelled (" + distUnit() + ")", value: distVal(totalDistM).toFixed(0) },
     { label: "Average Stop Duration",            value: fmtDurWhole(avgStop) },
     { label: "Number of Stops",                  value: String(numStops) }
   ], yPos);
   yPos += 24;
 
-  var headers = [["Start Time", "Distance / Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Stops"]];
+  var headers = [["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Stops"]];
 
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
@@ -750,26 +834,26 @@ function exportLegacyTripHistoryPdf() {
     doc.setTextColor(20, 20, 20); doc.setFontSize(12); doc.setFont("helvetica", "bold");
     doc.text(v.name, margin, yPos);
     yPos += 6;
-    v.driverGroups.forEach(function (driverGroup) {
+    v.driverGroups.forEach(function (driverGroup, driverIndex) {
     if (yPos > pageH - 45) { doc.addPage(); yPos = 16; }
     doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(45, 55, 72);
     var driverLines = doc.splitTextToSize("Driver: " + driverGroup.name, pageW - margin * 2);
     doc.text(driverLines, margin, yPos);
     yPos += driverLines.length * 5 + 3;
     var dayBlocks = driverGroup.days;
-    dayBlocks.forEach(function (block) {
+    dayBlocks.forEach(function (block, dayIndex) {
       var body = [];
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
 
-      body.push([{ content: block.date + "  Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap), colSpan: 7, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
+      body.push([{ content: block.date + "  Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap), colSpan: 8, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
 
       if (prevTrip) {
         // No duration on this row — the gap to the previous trip is overnight/
         // parked time, not idle (see HTML renderer note).
         body.push([
           fmtTime(firstTrip.start),
-          { content: "(Ignition On)", colSpan: 3, styles: { textColor: [217, 119, 6] } },
+          { content: "(Ignition On)", colSpan: 4, styles: { textColor: [217, 119, 6] } },
           "\u2014",
           "", ""
         ]);
@@ -782,7 +866,8 @@ function exportLegacyTripHistoryPdf() {
         var stopMins  = legacyStopMins(t);
         body.push([
           fmtTime(t.start),
-          milesFromDistance(t.distance).toFixed(2) + " mi\n" + fmtDurPrecise(driveMins),
+          fmtDist(t.distance, 2),
+          fmtDurPrecise(driveMins),
           addressForPoint(t.stopPoint, addrMap),
           fmtTime(t.stop),
           fmtDurPrecise(idleMins),
@@ -791,30 +876,25 @@ function exportLegacyTripHistoryPdf() {
         ]);
       });
 
-      var dayDistM = block.rows.reduce(function (s, r) { return s + (r.trip.distance || 0); }, 0);
-      var dayDrive = block.rows.reduce(function (s, r) { var dm = parseDurationToMins(r.trip.drivingDuration); return s + (dm != null ? dm : durationMins(r.trip.start, r.trip.stop)); }, 0);
-      var dayIdle  = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.idlingDuration) || 0); }, 0);
-      var dayCount = block.rows.filter(function (r) { return legacyStopMins(r.trip) != null; });
-      var dayStop  = dayCount.reduce(function (s, r) { return s + legacyStopMins(r.trip); }, 0);
       var totalStyles = { fontStyle: "bold", fillColor: [245, 245, 245] };
-      body.push([
-        { content: block.date + " Total", styles: totalStyles },
-        { content: milesFromDistance(dayDistM).toFixed(2) + " mi in " + fmtDurWhole(dayDrive), styles: totalStyles },
-        { content: "", styles: totalStyles },
-        { content: "", styles: totalStyles },
-        { content: fmtDurWhole(dayIdle), styles: totalStyles },
-        { content: fmtDurWhole(dayStop), styles: totalStyles },
-        { content: dayCount.length + " stops", styles: totalStyles }
-      ]);
+      function addTotal(label, trips) {
+        body.push(legacyTotalCells(label, trips).map(function (cell) { return { content: cell, styles: totalStyles }; }));
+      }
+      addTotal(block.date + " Total", block.rows.map(function (r) { return r.trip; }));
+      if (dayIndex === dayBlocks.length - 1) {
+        var driverTrips = [].concat.apply([], dayBlocks.map(function (day) { return day.rows.map(function (r) { return r.trip; }); }));
+        addTotal("Driver Total", driverTrips);
+        if (driverIndex === v.driverGroups.length - 1) addTotal("Vehicle Total", v.trips);
+      }
 
       doc.autoTable({
         startY: yPos,
-        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + block.date, colSpan: 7 }]].concat(headers),
+        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + block.date, colSpan: 8 }]].concat(headers),
         body: body,
         margin: { left: margin, right: margin },
         styles: { fontSize: 8, cellPadding: 2.2, textColor: [45, 55, 72] },
         headStyles: { fillColor: [0, 120, 212], textColor: 255, fontStyle: "bold", fontSize: 8 },
-        columnStyles: { 6: { cellWidth: 16 } }
+        columnStyles: { 7: { cellWidth: 16 } }
       });
       yPos = doc.lastAutoTable.finalY + 6;
       if (yPos > pageH - 30) { doc.addPage(); yPos = 16; }

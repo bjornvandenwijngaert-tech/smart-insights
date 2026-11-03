@@ -59,7 +59,16 @@ legacy-trip-report/
 Length selector (Daily / Weekly / Monthly / Custom) auto-fills the from/to date
 inputs; Custom leaves them for manual entry. Optional vehicle filter.
 
-## Current version: v1.3.0
+## Current version: v1.4.0
+
+- The viewer's `User.isMetric` is resolved during initialization before the report
+  becomes available, matching Smart Insights. Canonical `Trip.distance` stays in
+  kilometres: metric displays km, imperial converts numerically to miles in the
+  preview, summary cards, filtered results, CSV and PDF (50 km = 31.07 mi).
+- Preview and PDF have separate Distance and Duration (driving time) columns.
+  Footers show each driver/day, each driver over the selected period within that
+  vehicle, and the entire vehicle period. Totals sum unrounded source values and
+  retain seconds. CSV keeps its flat one-trip-per-row format.
 
 - Driver names now come from the `User` referenced by each trip, not the
   non-standard `Trip.driverName` field or the asset's current driver.
@@ -78,7 +87,8 @@ inputs; Custom leaves them for manual entry. Optional vehicle filter.
 This is a **lift** of the legacy-report functions from the parent
 `../src/app.js`. If you fix a bug in one, mirror it in the other until they are
 formally split into separate repos. Functions kept in sync include:
-`parseDurationToMins`, `fmtDurWhole`, `fmtDurPrecise`, `milesFromDistance`,
+`parseDurationToMins`, `fmtDurWhole`, `fmtDurPrecise`, `distVal`, `distUnit`, `fmtDist`,
+`legacyTotals`, `legacyTotalCells`, `legacyHtmlTotal`,
 `buildLegacyByDevice`, `resolveStopAddresses`, `formatReverseGeocodeAddress`,
 `addressForPoint`, `buildLegacyDayBlocks`, `renderLegacyTripHistoryOutput`,
 `exportLegacyTripHistoryPdf`, `drawPdfHeaderLogo`, `localDayKey`,
@@ -149,6 +159,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.3.0` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.4.0` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
-- Push is manual (same workflow as the parent app).
+- Publish only on explicit user request (same workflow as the parent app).

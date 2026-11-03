@@ -1279,6 +1279,28 @@ function tripHistoryCell(deviceId, trip) {
          " title='" + esc(url) + "'>Trip History</a></td>";
 }
 
+// Sum canonical km/minutes before any rounding; shared by HTML and PDF footers.
+function legacyTotals(trips) {
+  return trips.reduce(function (total, t) {
+    var drive = parseDurationToMins(t.drivingDuration);
+    var stop = legacyStopMins(t);
+    total.distance += t.distance || 0;
+    total.driving += drive != null ? drive : durationMins(t.start, t.stop);
+    total.idle += parseDurationToMins(t.idlingDuration) || 0;
+    if (stop != null) { total.stopped += stop; total.stops++; }
+    return total;
+  }, { distance: 0, driving: 0, idle: 0, stopped: 0, stops: 0 });
+}
+function legacyTotalCells(label, trips) {
+  var total = legacyTotals(trips);
+  return [label, fmtDist(total.distance, 2), fmtDurPrecise(total.driving), "", "",
+    fmtDurPrecise(total.idle), fmtDurPrecise(total.stopped), total.stops + " stops"];
+}
+function legacyHtmlTotal(label, trips) {
+  return "<tr style='font-weight:700;background:var(--surface-2)'>" + legacyTotalCells(label, trips).map(function (cell) {
+    return "<td>" + esc(cell) + "</td>";
+  }).join("") + "</tr>";
+}
 function renderLegacyTripHistoryOutput(byDevice, addrMap) {
   var output = document.getElementById("report-output");
   var vids = Object.keys(byDevice);
@@ -1286,10 +1308,10 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
 
   output.innerHTML = vids.map(function (vid) {
     var v = byDevice[vid];
-    var driverHtml = v.driverGroups.map(function (driverGroup) {
+    var driverHtml = v.driverGroups.map(function (driverGroup, driverIndex) {
     var dayBlocks = driverGroup.days;
 
-    var dayHtml = dayBlocks.map(function (block) {
+    var dayHtml = dayBlocks.map(function (block, dayIndex) {
       var rowsHtml = block.rows.map(function (r) {
         var t = r.trip;
         var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
@@ -1298,7 +1320,8 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
         var stopStr   = stopMins != null ? fmtDurPrecise(stopMins) : "\u2014";
         return "<tr>" +
           "<td>" + fmtTime(t.start) + "</td>" +
-          "<td>" + fmtDist(t.distance, 2) + "<br><span style='color:var(--text-muted);font-size:11px'>" + fmtDurPrecise(driveMins) + "</span></td>" +
+          "<td>" + fmtDist(t.distance, 2) + "</td>" +
+          "<td>" + fmtDurPrecise(driveMins) + "</td>" +
           "<td>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>" +
           "<td>" + fmtTime(t.stop) + "</td>" +
           "<td>" + fmtDurPrecise(idleMins) + "</td>" +
@@ -1307,28 +1330,29 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
         "</tr>";
       }).join("");
 
-      var dayDistM  = block.rows.reduce(function (s, r) { return s + (r.trip.distance || 0); }, 0);
-      var dayDrive  = block.rows.reduce(function (s, r) { var dm = parseDurationToMins(r.trip.drivingDuration); return s + (dm != null ? dm : durationMins(r.trip.start, r.trip.stop)); }, 0);
-      var dayIdle   = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.idlingDuration) || 0); }, 0);
-      var dayCount  = block.rows.filter(function (r) { return legacyStopMins(r.trip) != null; });
-      var dayStop   = dayCount.reduce(function (s, r) { return s + legacyStopMins(r.trip); }, 0);
+      var totalsHtml = legacyHtmlTotal(block.date + " Total", block.rows.map(function (r) { return r.trip; }));
+      if (dayIndex === dayBlocks.length - 1) {
+        var driverTrips = [].concat.apply([], dayBlocks.map(function (day) { return day.rows.map(function (r) { return r.trip; }); }));
+        totalsHtml += legacyHtmlTotal("Driver Total", driverTrips);
+        if (driverIndex === v.driverGroups.length - 1) totalsHtml += legacyHtmlTotal("Vehicle Total", v.trips);
+      }
 
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
-      var startingFromHtml = "<tr><td colspan='7' style='font-weight:600;background:var(--surface-2)'>" + block.date + " \u2014 Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
+      var startingFromHtml = "<tr><td colspan='8' style='font-weight:600;background:var(--surface-2)'>" + block.date + " \u2014 Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
       // "(Ignition On)" marks the day's first drive. We deliberately do NOT show a
       // duration here: the gap to the previous trip is overnight/parked time, not
       // idle, and Trip data has no pre-drive idle figure to show instead.
       var ignitionHtml = prevTrip
         // No Trip History cell here: this synthetic row marks the same trip whose
         // own row, directly below, already carries the link.
-        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='3'>(Ignition On)</td><td>\u2014</td><td></td><td></td></tr>"
+        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='4'>(Ignition On)</td><td>\u2014</td><td></td><td></td></tr>"
         : "";
 
       return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table'>" +
-        "<thead><tr><th>Start Time</th><th>Distance / Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th><th>Trip History</th></tr></thead>" +
+        "<thead><tr><th>Start Time</th><th>Distance</th><th>Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th><th>Trip History</th></tr></thead>" +
         "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml +
-        "<tr style='font-weight:700;background:var(--surface-2)'><td>" + block.date + " Total</td><td>" + fmtDist(dayDistM, 2) + " in " + fmtDurWhole(dayDrive) + "</td><td></td><td>" + dayCount.length + " stops</td><td>" + fmtDurWhole(dayIdle) + "</td><td>" + fmtDurWhole(dayStop) + "</td><td></td></tr>" +
+        totalsHtml +
         "</tbody></table></div>";
     }).join("");
 
@@ -3459,7 +3483,7 @@ function exportLegacyTripHistoryPdf() {
   ], yPos);
   yPos += 24;
 
-  var headers = [["Start Time", "Distance / Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Stops"]];
+  var headers = [["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Stops"]];
 
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
@@ -3467,26 +3491,26 @@ function exportLegacyTripHistoryPdf() {
     doc.setTextColor(20, 20, 20); doc.setFontSize(12); doc.setFont("helvetica", "bold");
     doc.text(v.name, margin, yPos);
     yPos += 6;
-    v.driverGroups.forEach(function (driverGroup) {
+    v.driverGroups.forEach(function (driverGroup, driverIndex) {
     if (yPos > pageH - 45) { doc.addPage(); yPos = 16; }
     doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(45, 55, 72);
     var driverLines = doc.splitTextToSize("Driver: " + driverGroup.name, pageW - margin * 2);
     doc.text(driverLines, margin, yPos);
     yPos += driverLines.length * 5 + 3;
     var dayBlocks = driverGroup.days;
-    dayBlocks.forEach(function (block) {
+    dayBlocks.forEach(function (block, dayIndex) {
       var body = [];
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
 
-      body.push([{ content: block.date + "  Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap), colSpan: 7, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
+      body.push([{ content: block.date + "  Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap), colSpan: 8, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
 
       if (prevTrip) {
         // No duration on this row — the gap to the previous trip is overnight/
         // parked time, not idle (see HTML renderer note).
         body.push([
           fmtTime(firstTrip.start),
-          { content: "(Ignition On)", colSpan: 3, styles: { textColor: [217, 119, 6] } },
+          { content: "(Ignition On)", colSpan: 4, styles: { textColor: [217, 119, 6] } },
           "\u2014",
           "", ""
         ]);
@@ -3499,7 +3523,8 @@ function exportLegacyTripHistoryPdf() {
         var stopMins  = legacyStopMins(t);
         body.push([
           fmtTime(t.start),
-          fmtDist(t.distance, 2) + "\n" + fmtDurPrecise(driveMins),
+          fmtDist(t.distance, 2),
+          fmtDurPrecise(driveMins),
           addressForPoint(t.stopPoint, addrMap),
           fmtTime(t.stop),
           fmtDurPrecise(idleMins),
@@ -3508,30 +3533,25 @@ function exportLegacyTripHistoryPdf() {
         ]);
       });
 
-      var dayDistM = block.rows.reduce(function (s, r) { return s + (r.trip.distance || 0); }, 0);
-      var dayDrive = block.rows.reduce(function (s, r) { var dm = parseDurationToMins(r.trip.drivingDuration); return s + (dm != null ? dm : durationMins(r.trip.start, r.trip.stop)); }, 0);
-      var dayIdle  = block.rows.reduce(function (s, r) { return s + (parseDurationToMins(r.trip.idlingDuration) || 0); }, 0);
-      var dayCount = block.rows.filter(function (r) { return legacyStopMins(r.trip) != null; });
-      var dayStop  = dayCount.reduce(function (s, r) { return s + legacyStopMins(r.trip); }, 0);
       var totalStyles = { fontStyle: "bold", fillColor: [245, 245, 245] };
-      body.push([
-        { content: block.date + " Total", styles: totalStyles },
-        { content: fmtDist(dayDistM, 2) + " in " + fmtDurWhole(dayDrive), styles: totalStyles },
-        { content: "", styles: totalStyles },
-        { content: "", styles: totalStyles },
-        { content: fmtDurWhole(dayIdle), styles: totalStyles },
-        { content: fmtDurWhole(dayStop), styles: totalStyles },
-        { content: dayCount.length + " stops", styles: totalStyles }
-      ]);
+      function addTotal(label, trips) {
+        body.push(legacyTotalCells(label, trips).map(function (cell) { return { content: cell, styles: totalStyles }; }));
+      }
+      addTotal(block.date + " Total", block.rows.map(function (r) { return r.trip; }));
+      if (dayIndex === dayBlocks.length - 1) {
+        var driverTrips = [].concat.apply([], dayBlocks.map(function (day) { return day.rows.map(function (r) { return r.trip; }); }));
+        addTotal("Driver Total", driverTrips);
+        if (driverIndex === v.driverGroups.length - 1) addTotal("Vehicle Total", v.trips);
+      }
 
       doc.autoTable({
         startY: yPos,
-        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + block.date, colSpan: 7 }]].concat(headers),
+        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + block.date, colSpan: 8 }]].concat(headers),
         body: body,
         margin: { left: margin, right: margin },
         styles: { fontSize: 8, cellPadding: 2.2, textColor: [45, 55, 72] },
         headStyles: { fillColor: [0, 120, 212], textColor: 255, fontStyle: "bold", fontSize: 8 },
-        columnStyles: { 6: { cellWidth: 16 } }
+        columnStyles: { 7: { cellWidth: 16 } }
       });
       yPos = doc.lastAutoTable.finalY + 6;
       if (yPos > pageH - 30) { doc.addPage(); yPos = 16; }
