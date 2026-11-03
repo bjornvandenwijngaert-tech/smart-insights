@@ -35,9 +35,13 @@ smart-insights/
 
 ---
 
-## Current version: v2.12.8
+## Current version: v2.12.9
 
 ### Changelog since v2.2.0
+- **v2.12.9** — Legacy Trip History presents dates as DD-MM-YYYY in the preview,
+  CSV, PDF headings/range/created date and PDF filename. ISO day keys, date input
+  values, API ranges and Trip History links are unchanged; other reports retain
+  their current formatting. Standalone Legacy v1.4.3.
 - **v2.12.8** — Legacy PDF removes the dedicated Stops column. Trip History is
   the final column: clickable links on trip rows, plain stop counts on daily,
   driver-period and vehicle-period totals. Landscape layout, numerical values

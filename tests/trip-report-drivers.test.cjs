@@ -184,6 +184,42 @@ function legacyHtmlRows(html) {
 }
 
 for (const variant of variants.filter(v => v.legacy)) {
+  test(variant.label + ": legacy dates display DD-MM-YYYY without changing canonical dates or links", () => {
+    const app = loadApp(variant), original = JSON.stringify(app.data.trips);
+    const urls = app.data.trips.map(t => app.hooks.tripHistoryUrl(t.device.id, t)).sort();
+    const groups = runReport(app, variant);
+    const rows = legacyHtmlRows(app.elements["report-output"].innerHTML);
+    assert(rows.some(r => r[0].startsWith("12-10-2026 — Starting from:")));
+    assert(rows.some(r => r[0] === "13-10-2026 Total"));
+    assert.equal(groups.bVan.driverGroups[0].days[0].date, "2026-10-12", "Grouping keys remain sortable ISO dates");
+    app.hooks.exportReportCsv();
+    assert.deepEqual([...new Set(parseCsv(app.downloads.at(-1)).slice(1).map(r => r[2]))].sort(), ["12-10-2026", "13-10-2026"]);
+    app.hooks.exportLegacyTripHistoryPdf(); const pdf = app.pdfs[0];
+    assert(pdf.texts.some(text => typeof text === "string" && text.startsWith("Created: 29-10-2026 ")));
+    assert(pdf.texts.includes("Report Totals for: 07-10-2026 \u2013 13-10-2026"));
+    assert(pdf.tables.every(t => /\d{2}-\d{2}-\d{4}$/.test(t.head[0][0].content)));
+    assert(pdf.tables.some(t => t.body[0][0].content.startsWith("12-10-2026  Starting from:")));
+    assert.equal(pdf.filename, "legacy_trip_history_07-10-2026_to_13-10-2026.pdf");
+    assert.deepEqual(pdf.links.map(link => link.url).sort(), urls);
+    assert.equal(app.elements["filter-from"].value, "2026-10-07"); assert.equal(app.elements["filter-to"].value, "2026-10-13");
+    const search = app.calls.find(c => c.params.typeName === "Trip").params.search;
+    assert.equal(search.fromDate, "2026-10-06T23:00:00.000Z"); assert.equal(search.toDate, "2026-10-13T22:59:59.000Z");
+    assert.equal(JSON.stringify(app.data.trips), original);
+  });
+  test(variant.label + ": legacy date padding and year-boundary ordering use canonical keys", () => {
+    const data = fixture(); data.trips = [
+      { ...data.trips[0], start: "2026-01-01T08:00:00Z", stop: "2026-01-01T09:00:00Z" },
+      { ...data.trips[0], id: "tYearEnd", start: "2025-12-31T08:00:00Z", stop: "2025-12-31T09:00:00Z" }
+    ];
+    const app = loadApp(variant, data);
+    assert.equal(app.hooks.fmtLegacyDate("2026-01-03"), "03-01-2026");
+    assert.equal(app.hooks.fmtLegacyDate(""), ""); assert.equal(app.hooks.fmtLegacyDate(null), "");
+    const groups = runReport(app, variant, "2025-12-31", "2026-01-01");
+    assert.deepEqual(Array.from(groups.bVan.driverGroups[0].days, day => day.date), ["2025-12-31", "2026-01-01"]);
+    app.hooks.exportReportCsv(); assert.deepEqual(parseCsv(app.downloads.at(-1)).slice(1).map(row => row[2]), ["31-12-2025", "01-01-2026"]);
+    const date = "2026-01-03T12:00:00Z";
+    assert.equal(app.hooks.fmtDateReadable(date), new Date(date).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }), "Other reports retain their existing date formatter");
+  });
   for (const metric of [true, false]) {
     test(variant.label + ": legacy unit conversion and separate columns " + (metric ? "metric" : "imperial"), () => {
       const data = fixture(); data.trips = [data.trips[0]]; data.trips[0].distance = 50;
@@ -215,10 +251,10 @@ for (const variant of variants.filter(v => v.legacy)) {
     assert.deepEqual(vehicle.map(r => r.slice(1, 3)), [["105.00 km", "5h 00m 00s"], ["5.00 km", "1h 00m 00s"]]);
     assert.equal(vehicle[0][6], "3h 00m 00s", "Overnight and unknown stop durations remain excluded");
     assert.equal(vehicle[0][7], "3 stops");
-    assert.equal(rows.filter(r => /^2026-.* Total$/.test(r[0])).length, 5);
+    assert.equal(rows.filter(r => /^\d{2}-\d{2}-2026 Total$/.test(r[0])).length, 5);
     app.hooks.exportLegacyTripHistoryPdf();
     const pdfRows = app.pdfs[0].tables.flatMap(t => Array.from(t.body, row => Array.from(row, c => typeof c === "object" ? c.content : c)));
-    for (const label of ["2026-10-12 Total", "2026-10-13 Total", "Driver Total", "Vehicle Total"]) {
+    for (const label of ["12-10-2026 Total", "13-10-2026 Total", "Driver Total", "Vehicle Total"]) {
       const totals = pdfRows.filter(r => r[0] === label);
       assert(totals.length && totals.every(r => r.length === 8 && /^\d+ stops$/.test(r[7])), "Stop totals share the final Trip History column");
       assert.deepEqual(totals, rows.filter(r => r[0] === label));
@@ -299,7 +335,7 @@ test("standalone legacy: initialization waits for viewer's regional preferences"
 
 test("Legacy aggregation, layout and distance helpers stay synchronized", () => {
   const standalone = loadApp(variants[0]).hooks, parent = loadApp(variants[1]).hooks;
-  for (const name of ["legacyTotals", "legacyTotalCells", "legacyHtmlTotal", "renderLegacyTripHistoryOutput", "exportLegacyTripHistoryPdf", "isMetric", "distVal", "distUnit", "fmtDist"]) {
+  for (const name of ["fmtLegacyDate", "legacyTotals", "legacyTotalCells", "legacyHtmlTotal", "renderLegacyTripHistoryOutput", "exportLegacyTripHistoryPdf", "isMetric", "distVal", "distUnit", "fmtDist"]) {
     assert.equal(standalone[name].toString().replace(/\r\n/g, "\n"), parent[name].toString().replace(/\r\n/g, "\n"), name);
   }
 });
@@ -335,8 +371,8 @@ for (const variant of variants.filter(v => v.legacy)) {
     const app = loadApp(variant); runReport(app, variant); app.hooks.exportLegacyTripHistoryPdf();
     const tables = app.pdfs[0].tables;
     assert.equal(tables.length, 5); assert(tables.every(t => t.head[0][0].content.includes(" | Driver: ")));
-    assert(tables.some(t => t.head[0][0].content.includes("Jamie Sample | 2026-10-13")));
-    assert(tables.some(t => t.head[0][0].content.includes("Alex Example | 2026-10-12")));
+    assert(tables.some(t => t.head[0][0].content.includes("Jamie Sample | 13-10-2026")));
+    assert(tables.some(t => t.head[0][0].content.includes("Alex Example | 12-10-2026")));
   });
   test(variant.label + ": vehicle filter updates rows, exports and cards", () => {
     const app = loadApp(variant); runReport(app, variant);
@@ -372,6 +408,8 @@ for (const variant of variants.filter(v => v.legacy)) {
       assert.equal(app.elements["filter-from"].value, from); assert.equal(app.elements["filter-to"].value, "2026-07-01");
     }
     assert.equal(runReport(app, variant).bVan.driverGroups[0].days[0].date, "2026-07-01");
+    assert(legacyHtmlRows(app.elements["report-output"].innerHTML).some(row => row[0] === "01-07-2026 Total"));
+    app.hooks.exportReportCsv(); assert.equal(parseCsv(app.downloads.at(-1))[1][2], "01-07-2026");
   });
 }
 

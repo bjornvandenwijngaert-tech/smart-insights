@@ -1279,6 +1279,8 @@ function tripHistoryCell(deviceId, trip) {
          " title='" + esc(url) + "'>Trip History</a></td>";
 }
 
+// Presentation only: keep canonical YYYY-MM-DD keys for grouping and API inputs.
+function fmtLegacyDate(dayKey) { return dayKey ? dayKey.split("-").reverse().join("-") : ""; }
 // Sum canonical km/minutes before any rounding; shared by HTML and PDF footers.
 function legacyTotals(trips) {
   return trips.reduce(function (total, t) {
@@ -1330,7 +1332,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
         "</tr>";
       }).join("");
 
-      var totalsHtml = legacyHtmlTotal(block.date + " Total", block.rows.map(function (r) { return r.trip; }));
+      var totalsHtml = legacyHtmlTotal(fmtLegacyDate(block.date) + " Total", block.rows.map(function (r) { return r.trip; }));
       if (dayIndex === dayBlocks.length - 1) {
         var driverTrips = [].concat.apply([], dayBlocks.map(function (day) { return day.rows.map(function (r) { return r.trip; }); }));
         totalsHtml += legacyHtmlTotal("Driver Total", driverTrips);
@@ -1339,7 +1341,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
 
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
-      var startingFromHtml = "<tr><td colspan='8' style='font-weight:600;background:var(--surface-2)'>" + block.date + " \u2014 Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
+      var startingFromHtml = "<tr><td colspan='8' style='font-weight:600;background:var(--surface-2)'>" + fmtLegacyDate(block.date) + " \u2014 Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
       // "(Ignition On)" marks the day's first drive. We deliberately do NOT show a
       // duration here: the gap to the previous trip is overnight/parked time, not
       // idle, and Trip data has no pre-drive idle figure to show instead.
@@ -1900,7 +1902,7 @@ function exportReportCsv() {
         var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
         var stopMins  = legacyStopMins(t);
         rows.push([
-          v.name, driverGroup.name, block.date, fmtTime(t.start),
+          v.name, driverGroup.name, fmtLegacyDate(block.date), fmtTime(t.start),
           distVal(t.distance).toFixed(2), fmtDurPrecise(driveMins),
           addressForPoint(t.stopPoint, addrMap), fmtTime(t.stop),
           fmtDurPrecise(idleMins), stopMins != null ? fmtDurPrecise(stopMins) : ""
@@ -3438,13 +3440,13 @@ function exportLegacyTripHistoryPdf() {
   doc.text("Legacy Trip History Report", margin, 11);
   doc.setFontSize(9); doc.setFont("helvetica", "normal");
   var now = new Date();
-  doc.text("Created: " + fmtDateReadable(now.toISOString()) + " " + fmtTime(now.toISOString()), margin, 18);
+  doc.text("Created: " + fmtLegacyDate(localDayKey(now)) + " " + fmtTime(now.toISOString()), margin, 18);
 
   var yPos = 32;
   doc.setFillColor(20, 20, 20);
   doc.rect(margin, yPos, pageW - margin * 2, 8, "F");
   doc.setTextColor(255, 255, 255); doc.setFontSize(10); doc.setFont("helvetica", "bold");
-  doc.text("Report Totals for: " + from + " \u2013 " + to, margin + 3, yPos + 5.5);
+  doc.text("Report Totals for: " + fmtLegacyDate(from) + " \u2013 " + fmtLegacyDate(to), margin + 3, yPos + 5.5);
   yPos += 14;
 
   // Report-wide KPIs across all vehicles
@@ -3503,7 +3505,7 @@ function exportLegacyTripHistoryPdf() {
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
 
-      body.push([{ content: block.date + "  Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap), colSpan: 8, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
+      body.push([{ content: fmtLegacyDate(block.date) + "  Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap), colSpan: 8, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
 
       if (prevTrip) {
         // No duration on this row — the gap to the previous trip is overnight/
@@ -3538,7 +3540,7 @@ function exportLegacyTripHistoryPdf() {
       function addTotal(label, trips) {
         body.push(legacyTotalCells(label, trips).map(function (cell) { return { content: cell, styles: totalStyles }; }));
       }
-      addTotal(block.date + " Total", block.rows.map(function (r) { return r.trip; }));
+      addTotal(fmtLegacyDate(block.date) + " Total", block.rows.map(function (r) { return r.trip; }));
       if (dayIndex === dayBlocks.length - 1) {
         var driverTrips = [].concat.apply([], dayBlocks.map(function (day) { return day.rows.map(function (r) { return r.trip; }); }));
         addTotal("Driver Total", driverTrips);
@@ -3547,7 +3549,7 @@ function exportLegacyTripHistoryPdf() {
 
       doc.autoTable({
         startY: yPos,
-        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + block.date, colSpan: 8 }]].concat(headers),
+        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + fmtLegacyDate(block.date), colSpan: 8 }]].concat(headers),
         body: body,
         margin: { left: margin, right: margin },
         styles: { fontSize: 8, cellPadding: 2.2, textColor: [45, 55, 72] },
@@ -3576,7 +3578,7 @@ function exportLegacyTripHistoryPdf() {
     doc.text("Confidential", margin, pageH - 8);
     doc.text("Page " + p + " of " + pageCount, pageW - margin, pageH - 8, { align: "right" });
   }
-  doc.save("legacy_trip_history_" + from + "_to_" + to + ".pdf");
+  doc.save("legacy_trip_history_" + fmtLegacyDate(from) + "_to_" + fmtLegacyDate(to) + ".pdf");
 }
 
 // ─── Map / GPS correlation ────────────────────────────────────────────────────

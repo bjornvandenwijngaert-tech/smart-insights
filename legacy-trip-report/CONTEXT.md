@@ -59,7 +59,13 @@ legacy-trip-report/
 Length selector (Daily / Weekly / Monthly / Custom) auto-fills the from/to date
 inputs; Custom leaves them for manual entry. Optional vehicle filter.
 
-## Current version: v1.4.2
+## Current version: v1.4.3
+
+- Dates in the preview, CSV, PDF headings/range/created date and PDF filename use
+  DD-MM-YYYY. `fmtLegacyDate` is presentation-only; canonical YYYY-MM-DD day keys,
+  date input values, sorting, API ranges and Trip History timestamps stay intact.
+
+### v1.4.2
 
 - PDF now has eight columns: Trip History is the final column, with trip links
   on detail rows and plain "X stops" counts on daily, driver and vehicle totals.
@@ -98,7 +104,7 @@ inputs; Custom leaves them for manual entry. Optional vehicle filter.
 This is a **lift** of the legacy-report functions from the parent
 `../src/app.js`. If you fix a bug in one, mirror it in the other until they are
 formally split into separate repos. Functions kept in sync include:
-`parseDurationToMins`, `fmtDurWhole`, `fmtDurPrecise`, `distVal`, `distUnit`, `fmtDist`,
+`parseDurationToMins`, `fmtDurWhole`, `fmtDurPrecise`, `distVal`, `distUnit`, `fmtDist`, `fmtLegacyDate`,
 `legacyTotals`, `legacyTotalCells`, `legacyHtmlTotal`,
 `buildLegacyByDevice`, `resolveStopAddresses`, `formatReverseGeocodeAddress`,
 `addressForPoint`, `buildLegacyDayBlocks`, `renderLegacyTripHistoryOutput`,
@@ -170,6 +176,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.4.2` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.4.3` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).
