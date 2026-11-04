@@ -16,10 +16,10 @@ const variants = [
 ];
 
 function fixture() {
-  const devices = [{ id: "bVan", name: "Vehicle One - TEST01", driver: { id: "bCurrent" } }, { id: "bOther", name: "Vehicle Two - TEST02" }];
+  const devices = [{ id: "bVan", name: "Vehicle One - TEST01", groups: [{ id: "gChild" }], driver: { id: "bCurrent" } }, { id: "bOther", name: "Vehicle Two - TEST02", groups: [{ id: "gOther" }] }];
   const users = [
-    { id: "bDriverA", firstName: "Alex", lastName: "Example", name: "alex@example.test" },
-    { id: "bDriverB", firstName: "Jamie", lastName: "Sample", name: "jamie@example.test", isDriver: false, activeTo: "2026-10-13T00:00:00Z" }
+    { id: "bDriverA", firstName: "Alex", lastName: "Example", name: "alex@example.test", isDriver: true, driverGroups: [{ id: "gChild" }], companyGroups: [{ id: "gOther" }] },
+    { id: "bDriverB", firstName: "Jamie", lastName: "Sample", name: "jamie@example.test", driverGroups: [{ id: "gOther" }], companyGroups: [{ id: "gChild" }], isDriver: false, activeTo: "2026-10-13T00:00:00Z" }
   ];
   function trip(id, device, driver, day, hour, distance, stopped) {
     return { id, device: { id: device }, driver: { id: driver },
@@ -35,7 +35,10 @@ function fixture() {
     trip("t6", "bOther", "bDriverA", 12, 14, 5, "00:30:00")
   ];
   trips[4].driverName = "Current Driver Must Not Be Used";
-  return { devices, users, trips };
+  const groups = [{ id: "GroupCompanyId", name: "Company", children: [{ id: "gParent" }, { id: "gOther" }] },
+    { id: "gParent", name: "North", children: [{ id: "gChild" }] }, { id: "gChild", name: "North depot", children: [] },
+    { id: "gOther", name: "South", children: [] }, { id: "gSecurity", name: "Security only", children: [] }];
+  return { devices, users, trips, groups };
 }
 
 function testClock() {
@@ -70,7 +73,8 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
   function element(id) {
     if (!elements[id]) elements[id] = { value: "", innerHTML: "", checked: false, children: [], style: {}, listeners: {},
       classList: { values: new Set(), add(value) { this.values.add(value); }, remove(value) { this.values.delete(value); },
-        toggle(value) { this.values.has(value) ? this.values.delete(value) : this.values.add(value); }, contains(value) { return this.values.has(value); } },
+        toggle(value, force) { const add = force === undefined ? !this.values.has(value) : force; add ? this.values.add(value) : this.values.delete(value); }, contains(value) { return this.values.has(value); } },
+      attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, getAttribute(name) { return this.attributes[name]; },
       addEventListener(name, handler) { this.listeners[name] = handler; }, appendChild(child) { this.children.push(child); } };
     return elements[id];
   }
@@ -140,16 +144,18 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
   context.window = context; context.location = { hostname: "my.geotab.com", pathname: "/demo/" };
   let source = fs.readFileSync(path.join(root, variant.file), "utf8");
   if (variant.privateScope) source = source.replace(/\}\)\(\);\s*$/, "globalThis.reportTestHooks = {state, runActivityReport, runReport, getActivityCols, restoreActivityColumns, saveSettings, filterReportByVehicle, exportActivityCsv, exportActivityPdf, exportActivityExcel, reportDriverId, isUnassignedDriver, reportUserName, reportDriverInfo, resolveReportDrivers, groupReportDriverDays, buildActivityByDevice, fmtDateInput, applyRangeLength, localDayKey, activityVehicleIds, activityReportRange, activityRangeLabel, activityTotals, fmtActivityTime, activityLastTrip, activityDayEndpoints, activityDayElapsed, activitySummaryColumns, activitySummaryHeaders, activitySummaryGridStyle, activitySummaryNumbers, activityNumberText, activityDayValues, activityVehicleNumbers, renderActivityReport, activityWallDate, addActivityGroupedWorksheet, setupReports, cancelActivityReport: typeof cancelActivityReport === 'function' ? cancelActivityReport : undefined, activityCoordinate: typeof activityCoordinate === 'function' ? activityCoordinate : undefined, activityLocationKey: typeof activityLocationKey === 'function' ? activityLocationKey : undefined, createActivityRun: typeof createActivityRun === 'function' ? createActivityRun : undefined, activityLocationCall: typeof activityLocationCall === 'function' ? activityLocationCall : undefined, resolveActivityLocations: typeof resolveActivityLocations === 'function' ? resolveActivityLocations : undefined};\n})();");
+  if (!variant.privateScope) vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/filters.js"), "utf8"), context, { filename: "legacy-trip-report/src/filters.js" });
   vm.runInContext(source, context, { filename: variant.file });
   const hooks = variant.privateScope ? context.reportTestHooks : context;
   hooks.state.api = { call(method, params, success, failure) {
     calls.push({ method, params: JSON.parse(JSON.stringify(params)), at: clock.now });
     if (method === "Get" && params.typeName === "Device") success(data.devices);
+    else if (method === "Get" && params.typeName === "Group") success(data.groups || []);
     else if (method === "Get" && params.typeName === "Trip") success(data.trips);
     else if (method === "Get" && params.typeName === "LogRecord") success(data.logRecords || []);
     else if (method === "Get" && params.typeName === "User") {
-      if (denyDrivers) failure(new Error("User permission denied"));
-      else success(data.users.filter(user => params.search.userIds.includes(user.id)));
+      if (denyDrivers && params.search.userIds) failure(new Error("User permission denied"));
+      else success(data.users.filter(user => !params.search.userIds || params.search.userIds.includes(user.id)));
     } else if (method === "GetAddresses") success(params.coordinates.map(pt => ({ formattedAddress: "Stop " + pt.x })));
     else throw new Error("Unexpected API operation: " + method + " " + JSON.stringify(params));
   } };
@@ -282,7 +288,13 @@ for (const variant of variants.filter(v => v.legacy)) {
     const pdf = app.pdfs[0];
     const expected = app.data.trips.map(t => app.hooks.tripHistoryUrl(t.device.id, t)).sort();
     assert.deepEqual(pdf.links.map(link => link.url).sort(), expected);
-    assert.equal(pdf.internal.pageSize.getWidth(), 297, "Keep the spacious landscape layout");
+    assert.equal(pdf.internal.pageSize.getWidth(), 210, "Portrait A4 is required");
+    assert.equal(pdf.internal.pageSize.getHeight(), 297);
+    for (const table of pdf.tables) {
+      assert.equal(table.styles.overflow, "linebreak");
+      assert.equal(table.columnStyles[3].cellWidth, 33, "Address width is capped");
+      assert.equal(Object.values(table.columnStyles).reduce((sum, column) => sum + column.cellWidth, 0), 182);
+    }
     assert(pdf.links.every(link => link.width > 0 && link.height > 0 && !link.url.includes("&#39;")), "Clickable PDF links use complete raw URLs");
     const options = pdf.tables[0], raw = options.body.find(row => row[7] && row[7].tripHistoryUrl)[7];
     assert.equal(raw.content, "Trip History");
@@ -325,7 +337,9 @@ test("standalone legacy: initialization waits for viewer's regional preferences"
   const app = loadApp(variants[0]); app.hooks.state.unitSystem = "Imperial";
   app.elements.main = app.context.document.getElementById("main"); app.elements.main.classList.add("hidden");
   let completeUser, initialized = 0;
-  const api = { getSession(cb) { cb({ userName: "viewer@example.test" }); }, call(method, params, success) { completeUser = success; } };
+  const api = { getSession(cb) { cb({ userName: "viewer@example.test" }); }, call(method, params, success) {
+    if (params.search && params.search.name) completeUser = success; else success([]);
+  } };
   app.context.geotab.addin.legacyTripHistory().initialize(api, { database: "demo" }, () => initialized++);
   assert.equal(initialized, 0); assert(app.elements.main.classList.contains("hidden"));
   completeUser([{ name: "viewer@example.test", isMetric: true }]);
@@ -357,7 +371,7 @@ for (const variant of variants.filter(v => v.legacy)) {
     for (const label of ["Driver: Alex Example", "Driver: Jamie Sample", "Unassigned / unknown driver"]) assert(html.includes(label));
     assert(!html.includes("Current Driver Must Not Be Used"));
     assert.equal((html.match(/<table /g) || []).length, 5);
-    assert.deepEqual(app.calls.filter(c => c.params.typeName === "User").map(c => c.params.search), [{ userIds: ["bDriverA", "bDriverB"] }]);
+    assert.deepEqual(app.calls.filter(c => c.params.typeName === "User" && c.params.search.userIds).map(c => c.params.search), [{ userIds: ["bDriverA", "bDriverB"] }]);
   });
   test(variant.label + ": CSV attributes every trip to one historical driver", () => {
     const app = loadApp(variant); runReport(app, variant); app.hooks.exportReportCsv();
@@ -848,6 +862,214 @@ test("Activity vehicle/day and worksheet helpers stay synchronized with parent",
   for (const name of ["getActivityCols", "restoreActivityColumns", "activityCoordinate", "activityLocationKey", "cancelActivityReport", "createActivityRun", "activityLocationCall", "resolveActivityLocations", "buildActivityByDevice", "activityVehicleIds", "activityReportRange", "activityRangeLabel", "activityTotals", "fmtActivityTime", "activityLastTrip", "activityDayEndpoints", "activityDayElapsed", "activitySummaryColumns", "activitySummaryHeaders", "activitySummaryGridStyle", "activitySummaryNumbers", "activityNumberText", "activityDayValues", "activityVehicleNumbers", "renderActivityReport", "activityWallDate", "addActivityGroupedWorksheet"]) {
     assert.equal(parent[name].toString().replace(/\r\n/g, "\n"), standalone[name].toString().replace(/\r\n/g, "\n"), name);
   }
+});
+
+// Synthetic catalog/control-flow fixtures; authenticated MyGeotab/native matching
+// remains a separate smoke check, not something these mocks establish.
+for (const variant of variants.filter(v => v.legacy)) {
+  function setup(data) { const app = loadApp(variant, data); app.hooks.setupLegacyFilters(); return app; }
+  function ids(app) { return Array.from(app.hooks.state.reportData, trip => trip.id).sort(); }
+  function change(app, id, value) { const el = app.elements[id]; el.value = value; el.listeners.change.call(el); }
+  test(variant.label + ": groups include descendants, union memberships and constrain choices before Run", () => {
+    const app = setup(), f = app.hooks.legacyFilters();
+    assert.equal(f.mode, "assets"); assert.equal(f.ready, true);
+    assert(!app.elements["legacy-group-options"].innerHTML.includes("Security only"));
+    f.groups = ["gParent"]; app.hooks.renderLegacyChoices();
+    assert.deepEqual(Array.from(app.hooks.legacyEntities(), entity => entity.id), ["bVan"]);
+    runReport(app, variant); assert.deepEqual(ids(app), ["t1", "t2", "t3", "t4", "t5"]);
+    f.groups.push("gOther"); app.hooks.applyLegacyFilters(); assert.equal(ids(app).length, 6);
+    f.groups = ["gMissing"]; app.hooks.applyLegacyFilters(); assert.deepEqual(ids(app), []);
+    assert(app.elements["export-pdf-legacy"].classList.contains("hidden"));
+  });
+  test(variant.label + ": driver home groups, not company/data-access groups, scope historical trips", () => {
+    const app = setup(), f = app.hooks.legacyFilters();
+    change(app, "legacy-mode", "drivers"); f.groups = ["gParent"];
+    runReport(app, variant);
+    assert.deepEqual(ids(app), ["t1", "t3", "t6"], "Driver scope follows home group even in another asset group");
+    f.groups = ["gOther"]; app.hooks.applyLegacyFilters(); assert.deepEqual(ids(app), ["t2", "t4"], "Archived driver is retained");
+    f.groups = []; app.hooks.applyLegacyFilters(); assert.equal(ids(app).length, 6);
+    assert(app.hooks.legacyEntities().some(entity => entity.id === "unassigned"));
+  });
+  test(variant.label + ": select all minus one survives reruns and asset/driver mode changes", () => {
+    const app = setup();
+    app.hooks.setLegacySelected("bVan", false); runReport(app, variant);
+    assert.deepEqual(ids(app), ["t6"]);
+    runReport(app, variant); assert.deepEqual(ids(app), ["t6"]);
+    change(app, "legacy-mode", "drivers"); app.hooks.setLegacySelected("id:bDriverA", false); app.hooks.applyLegacyFilters();
+    assert.deepEqual(ids(app), ["t2", "t4", "t5"]);
+    change(app, "legacy-mode", "assets"); assert.deepEqual(ids(app), ["t6"]);
+    change(app, "legacy-mode", "drivers"); runReport(app, variant); assert.deepEqual(ids(app), ["t2", "t4", "t5"]);
+  });
+  test(variant.label + ": select-all checkbox supports search subsets, partial selection and selecting none", () => {
+    const app = setup(); runReport(app, variant);
+    app.elements["legacy-entity-search"].value = "Vehicle One";
+    const all = app.elements["legacy-select-all"];
+    all.checked = false; all.listeners.change.call(all);
+    assert.deepEqual(ids(app), ["t6"]);
+    app.elements["legacy-entity-search"].value = ""; app.hooks.renderLegacyChoices();
+    assert.equal(all.indeterminate, true); assert.equal(all.checked, false);
+    all.checked = true; all.listeners.change.call(all); assert.equal(ids(app).length, 6);
+    all.checked = false; all.listeners.change.call(all); assert.deepEqual(ids(app), []);
+    runReport(app, variant); assert.deepEqual(ids(app), [], "Empty selection must never mean all");
+    assert(app.elements["export-csv"].classList.contains("hidden"));
+    app.hooks.exportReportCsv(); assert.equal(app.downloads.length, 0);
+  });
+  test(variant.label + ": driver filtering preserves handover predecessors and full-timeline overnight decisions in exports", () => {
+    const app = setup(), f = app.hooks.legacyFilters();
+    f.mode = "drivers"; f.drivers = { all: false, ids: { "id:bDriverA": true } };
+    runReport(app, variant);
+    const row = app.hooks.state.legacyByDevice.bVan.driverGroups[0].days[0].rows[1];
+    assert.equal(row.prevTrip.id, "t2"); assert.equal(app.hooks.legacyStopMins(row.trip), null);
+    app.hooks.exportReportCsv();
+    const csv = parseCsv(app.downloads[0]); assert.equal(csv.length, 4); assert(csv.slice(1).every(r => r[1] === "Alex Example"));
+    assert.equal(app.hooks.state.legacyStopInfo.get(row.trip).excluded, true, "CSV must not rebuild a filtered timeline");
+    app.hooks.exportLegacyTripHistoryPdf(); assert.equal(app.pdfs[0].links.length, 3);
+    f.drivers = { all: false, ids: { "id:bDriverB": true } }; app.hooks.applyLegacyFilters();
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: Stop 1"));
+    assert.equal(app.hooks.state.legacyByDevice.bVan.driverGroups[0].days[0].rows[0].prevTrip.id, "t1");
+  });
+  test(variant.label + ": duplicate labels do not merge selected assets or drivers", () => {
+    const data = fixture(); data.devices[1].name = data.devices[0].name; data.users[1].firstName = "Alex"; data.users[1].lastName = "Example";
+    const app = setup(data), f = app.hooks.legacyFilters();
+    assert(app.hooks.legacyEntities().every(entity => entity.name.includes(entity.id)));
+    f.mode = "drivers"; f.drivers = { all: false, ids: { "id:bDriverB": true } };
+    runReport(app, variant); assert.deepEqual(ids(app), ["t2", "t4"]);
+  });
+  test(variant.label + ": completed export dates remain tied to completed data", () => {
+    const app = setup(); runReport(app, variant);
+    app.elements["filter-from"].value = "2026-11-01"; app.elements["filter-to"].value = "2026-11-02";
+    app.hooks.exportLegacyTripHistoryPdf();
+    assert.equal(app.pdfs[0].filename, "legacy_trip_history_07-10-2026_to_13-10-2026.pdf");
+  });
+  test(variant.label + ": empty/error reruns retain choices but never expose previous results", () => {
+    const app = setup(), f = app.hooks.legacyFilters();
+    app.hooks.setLegacySelected("bOther", false); runReport(app, variant);
+    app.data.trips = []; runReport(app, variant);
+    assert.equal(app.hooks.legacyFilters(), f); assert.deepEqual(ids(app), []);
+    assert(app.elements["export-pdf-legacy"].classList.contains("hidden"));
+    const original = app.hooks.state.api.call;
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "Trip" ? failure(new Error("Trip denied")) : original(method, params, success, failure);
+    runReport(app, variant);
+    assert.equal(app.hooks.state.legacyByDevice, null); assert.equal(app.hooks.state.legacyReportRange, null);
+    assert.equal(app.hooks.legacySelected("bOther"), false);
+  });
+  test(variant.label + ": late run callbacks cannot mutate a newer snapshot or dispatch more lookups", () => {
+    const app = setup(), original = app.hooks.state.api.call;
+    let late, first = true;
+    app.hooks.state.api.call = (method, params, success, failure) => {
+      if (params.typeName === "User" && params.search.userIds && first) { first = false; late = success; }
+      else original(method, params, success, failure);
+    };
+    let oldDone = 0; app.hooks.runLegacyTripHistoryReport("2026-10-07", "2026-10-13", () => oldDone++);
+    app.hooks.setLegacySelected("bVan", false); runReport(app, variant);
+    const before = app.calls.length, snapshot = app.hooks.state.legacyByDevice;
+    late([{ id: "bDriverA", firstName: "Stale", lastName: "User" }]); app.clock.flush();
+    assert.equal(app.calls.length, before); assert.equal(oldDone, 0); assert.equal(app.hooks.state.legacyByDevice, snapshot);
+    assert.equal(app.hooks.state.reportDriverMap.bDriverA.name, "Alex Example"); assert.deepEqual(ids(app), ["t6"]);
+  });
+  test(variant.label + ": catalog errors/timeouts fail visibly and Retry preserves choices", () => {
+    const app = loadApp(variant), original = app.hooks.state.api.call;
+    app.hooks.setLegacySelected("bOther", false);
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "Group" ? undefined : original(method, params, success, failure);
+    app.hooks.setupLegacyFilters(); app.clock.flush();
+    assert.equal(app.hooks.legacyFilters().ready, false);
+    assert(!app.elements["legacy-filter-retry"].classList.contains("hidden"));
+    app.hooks.state.api.call = original; runReport(app, variant); assert.deepEqual(ids(app), ["t1", "t2", "t3", "t4", "t5"]);
+  });
+  test(variant.label + ": initialization boundary clears selections/catalogs and rejects old-identity callbacks", () => {
+    const app = loadApp(variant), original = app.hooks.state.api.call;
+    let late;
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "Group" ? late = success : original(method, params, success, failure);
+    app.hooks.setupLegacyFilters(); app.hooks.setLegacySelected("bVan", false);
+    app.hooks.resetLegacyPage(); app.hooks.state.api.call = original;
+    app.data.devices[0].name = "New identity asset";
+    runReport(app, variant); const snapshot = app.hooks.state.legacyByDevice;
+    late([{ id: "gOther", name: "Old database group" }]); app.clock.flush();
+    assert.equal(app.hooks.state.legacyByDevice, snapshot); assert.equal(app.hooks.legacySelected("bVan"), true);
+    assert.equal(snapshot.bVan.name, "New identity asset"); assert(!app.elements["legacy-group-options"].innerHTML.includes("Old database group"));
+  });
+  test(variant.label + ": initialization removes previous identity content before new data arrives", () => {
+    const app = setup(); runReport(app, variant);
+    app.elements["db-name"] = app.context.document.getElementById("db-name"); app.elements["db-name"].textContent = "old-database";
+    app.hooks.resetLegacyPage();
+    assert(!app.elements["report-output"].innerHTML.includes("TEST01"), "Old asset/driver/address preview must disappear immediately");
+    assert.equal(app.elements["report-summary"].innerHTML, "");
+    assert(app.elements["report-summary"].classList.contains("hidden"));
+    assert.equal(app.elements["db-name"].textContent, "");
+    assert.deepEqual(Object.keys(app.hooks.state.deviceMap), []);
+    assert.equal(app.elements["legacy-group-options"].innerHTML, "");
+    assert.equal(app.elements["legacy-entity-options"].innerHTML, "");
+  });
+  test(variant.label + ": obsolete initialization cannot change a newer viewer's units or continue setup", () => {
+    const app = loadApp(variant);
+    let late, setupCount = 0, completedA = 0, completedB = 0;
+    if (variant.label === "parent legacy") {
+      for (const name of ["setupNav", "applyUnitLabels", "restoreActivitySettings", "setupEditMode", "setupWidgetPicker", "setupModal", "setupParamEditor", "setupMap", "setupIncident", "loadSuggestions"]) app.hooks[name] = () => {};
+      app.hooks.setupReports = () => setupCount++;
+      app.hooks.restoreDashboard = done => done();
+    }
+    function api(viewer, pending) { return { getSession(done) { done({ userName: viewer }); }, call(method, params, success) {
+      if (params.search && params.search.name) { if (pending) late = success; else success([{ name: viewer, isMetric: false }]); }
+      else success([]);
+    } }; }
+    const addin = app.context.geotab.addin[variant.label === "parent legacy" ? "smartInsights" : "legacyTripHistory"]();
+    addin.initialize(api("old@example.test", true), { database: "old" }, () => completedA++);
+    addin.initialize(api("new@example.test", false), { database: "new" }, () => completedB++);
+    assert.equal(app.hooks.distUnit(), "mi");
+    late([{ name: "old@example.test", isMetric: true }]); app.clock.flush();
+    assert.equal(app.hooks.distUnit(), "mi", "Old metric user cannot overwrite the current Imperial user");
+    assert.equal(completedB, 1); assert.equal(completedA, variant.label === "parent legacy" ? 1 : 0);
+    if (variant.label === "parent legacy") assert.equal(setupCount, 1, "Only current initialization runs asynchronous setup");
+  });
+  test(variant.label + ": every Run refreshes asset and group memberships without resetting exclusions", () => {
+    const app = setup(), f = app.hooks.legacyFilters(); runReport(app, variant);
+    app.hooks.setLegacySelected("bOther", false);
+    app.data.devices = app.data.devices.concat({ id: "bNew", name: "Newly added asset", groups: [{ id: "gChild" }] });
+    app.data.trips = app.data.trips.concat({ ...app.data.trips[0], id: "t7", device: { id: "bNew" } });
+    runReport(app, variant);
+    assert.deepEqual(ids(app), ["t1", "t2", "t3", "t4", "t5", "t7"], "All assets includes newly created assets while keeping the excluded asset out");
+    assert.equal(app.hooks.legacyFilters(), f); assert.equal(app.hooks.legacySelected("bOther"), false);
+    f.groups = ["gParent"];
+    app.data.devices = app.data.devices.map(device => device.id === "bVan" ? { ...device, groups: [{ id: "gOther" }] } : device);
+    runReport(app, variant); assert.deepEqual(ids(app), ["t7"], "Group membership is refreshed too");
+    app.data.groups = app.data.groups.map(group => group.id === "gParent" ? { ...group, children: [] } : group);
+    runReport(app, variant); assert.deepEqual(ids(app), [], "Removed child relationships cannot remain cached");
+  });
+}
+
+test("parent: reinitializing a selected Legacy report reloads pre-run selectors without a report-type change", () => {
+  const app = loadApp(variants[1]), original = app.hooks.state.api.call;
+  app.hooks.setupReports(); runReport(app, variants[1]);
+  app.hooks.setLegacySelected("bOther", false);
+  for (const name of ["setupNav", "applyUnitLabels", "restoreActivitySettings", "setupEditMode", "setupWidgetPicker", "setupModal", "setupParamEditor", "setupMap", "setupIncident", "loadSuggestions"]) app.hooks[name] = () => {};
+  app.hooks.restoreDashboard = done => done();
+  app.data.devices = app.data.devices.map(device => ({ ...device, name: "New database " + device.name }));
+  const api = { getSession(done) { done({ userName: "new@example.test" }); }, call(method, params, success, failure) {
+    if (params.search && params.search.name) success([{ name: "new@example.test", isMetric: false }]);
+    else original(method, params, success, failure);
+  } };
+  app.context.geotab.addin.smartInsights().initialize(api, { database: "new" }, () => {});
+  app.clock.flush();
+  assert(app.hooks.state.legacyFilters && app.hooks.state.legacyFilters.ready, "Pre-run catalogs must load during initialization, not only after a change event");
+  assert(app.elements["legacy-entity-options"].innerHTML.includes("New database Vehicle One"));
+  assert(app.elements["legacy-group-options"].innerHTML.includes("North depot"));
+  assert.equal(app.hooks.legacySelected("bOther"), true, "A new identity does not inherit old exclusions");
+});
+
+test("parent: pending non-Legacy report cannot overwrite Legacy after a report-type switch", () => {
+  const app = loadApp(variants[1]), original = app.hooks.state.api.call;
+  app.hooks.setupReports(); app.elements["report-type"].value = "trips";
+  let late;
+  app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "Trip" ? late = success : original(method, params, success, failure);
+  app.hooks.runReport();
+  assert.equal(app.elements["run-report"].disabled, true);
+  app.elements["report-type"].value = "legacy-trip-history";
+  app.elements["report-type"].listeners.change.call(app.elements["report-type"]);
+  assert.equal(app.elements["run-report"].disabled, false, "Cancellation must make Run clickable for the newly selected report");
+  app.hooks.state.api.call = original; app.hooks.runReport(); app.clock.flush();
+  assert.equal(app.elements["run-report"].disabled, false);
+  const snapshot = app.hooks.state.legacyByDevice, html = app.elements["report-output"].innerHTML;
+  late([]); assert.equal(app.hooks.state.legacyByDevice, snapshot); assert.equal(app.elements["report-output"].innerHTML, html);
 });
 
 test("release manifests, badges and local asset cache versions agree", () => {

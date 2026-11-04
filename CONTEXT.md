@@ -35,9 +35,25 @@ smart-insights/
 
 ---
 
-## Current version: v2.12.9
+## Current version: v2.13.0
 
 ### Changelog since v2.2.0
+- **v2.13.0** — Legacy PDF returns to portrait A4, with a fixed 33mm address
+  column and automatic line wrapping/row height. Group-aware Assets/Drivers
+  multi-selection is available before Run, including search and all-except-one.
+  Choices are page-memory only and survive runs; initialization/refresh resets
+  them. Driver groups mean home `driverGroups`, not user data-access groups.
+  The shared controller/CSS live in `legacy-trip-report/src/filters.{js,css}`;
+  other reports retain their existing selectors. Filtered preview/KPIs/CSV/PDF
+  share one result, preserve full-timeline predecessors/overnight exclusions,
+  and use the completed report's date range. Catalogs refresh on each Run without
+  resetting selections. Initialization guards units and clears old report DOM;
+  report cancellation restores Run, and long PDF asset headings also wrap.
+  Standalone Legacy v1.5.0.
+  Local control-flow and real jsPDF/AutoTable rendering checks pass. Authenticated
+  MyGeotab/native group matching and keyboard/browser verification are pending
+  (Chrome relay disconnected). GitHub publication requested by the user on
+  2026-11-04; authenticated MyGeotab/native validation is still outstanding.
 - **v2.12.9** — Legacy Trip History presents dates as DD-MM-YYYY in the preview,
   CSV, PDF headings/range/created date and PDF filename. ISO day keys, date input
   values, API ranges and Trip History links are unchanged; other reports retain

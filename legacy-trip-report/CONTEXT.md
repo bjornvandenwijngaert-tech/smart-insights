@@ -23,6 +23,9 @@ legacy-trip-report/
                       jsPDF-autotable (NO Chart.js / Leaflet / SheetJS — not needed)
   src/
     app.js          — Only the legacy-report logic + its dependencies
+    filters.js      — Shared page-memory catalog, selectors and guarded runner;
+                      also loaded by the parent app
+    filters.css     — Scoped selectors and wrapped preview address cells
     styles.css      — Copied whole from the parent app (contains unused rules for
                       widgets/modals/map; safe, can be trimmed later)
     logo-data.js    — Geotab logo as a base64 data URL (GEOTAB_LOGO_DATAURL)
@@ -40,7 +43,9 @@ legacy-trip-report/
 ---
 
 ## How the report works
-1. Fetch `Device` (name map) + `Trip` for the selected range.
+1. Load `Device`, `User` and `Group` catalogs for pre-run selectors; fetch `Trip`
+   for the selected range when Run is clicked. Failed/incomplete catalogs are
+   shown with Retry, never treated as an unrestricted filter.
 2. Resolve each unique historical `Trip.driver.id` with `Get User`, using
    `UserSearch.userIds` in batches of 100. Do not filter to currently active users
    or currently enabled drivers; archived users may own trips in this range.
@@ -57,9 +62,65 @@ legacy-trip-report/
    headers repeat the vehicle, driver and date on continuation pages.
 
 Length selector (Daily / Weekly / Monthly / Custom) auto-fills the from/to date
-inputs; Custom leaves them for manual entry. Optional vehicle filter.
+inputs; Custom leaves them for manual entry. Group selection includes descendants
+and combines selected groups as a union. Assets uses `Device.groups`; Drivers
+uses driver home `driverGroups` (not `companyGroups`, `reportGroups` or security
+groups). Unknown drivers have no group membership, so appear only under All
+groups. Driver trips can span multiple assets, independent of asset group.
 
-## Current version: v1.4.3
+## Current version: v1.5.0
+
+**Why:** Landscape PDFs are unwanted, and the old post-run single-vehicle
+selector reset whenever the report was rerun.
+
+**Approach:** Keep all eight PDF columns within portrait A4 using fixed widths
+(address 33mm), line wrapping and automatic row height. A shared controller
+offers group filtering, an Assets/Drivers mode (Assets default), searchable
+checkbox selection and Select all filtered. Individual exclusions remain set
+on subsequent runs. Choices are not written to storage: refresh/close or a new
+initialization resets them; changing report type and returning does not.
+
+- Build the complete vehicle timeline first, then select driver groups without
+  rebuilding predecessors or overnight-stop classification. Preview, totals,
+  CSV and PDF all consume the same selected snapshot. Empty/failed/loading runs
+  cannot export an earlier report. Completed exports retain their own range.
+- Initialization clears catalogs/results/selection before replacing the API;
+  callbacks from obsolete runs/identities cannot publish or dispatch more work.
+  The same generation guard protects regional settings and initialization
+  continuations. Identity-dependent preview/summary/filter content is cleared
+  immediately. Cancellation restores the shared Run button for every report type.
+- Each Run refreshes Device/User/Group membership records while retaining
+  selected IDs/exclusions, so new assets and group-tree changes are reflected.
+  Long asset headings wrap inside the portrait PDF margins as well as addresses.
+  Parent initialization also loads pre-run catalogs when Legacy remains selected
+  across reinitialization; it does not depend on a report-type change event.
+- Tests: `node --test tests/trip-report-drivers.test.cjs`. Real PDF renderer:
+  `node tests/legacy-pdf-layout.cjs <pinned-library-directory>` using the exact
+  jsPDF 2.5.1 / AutoTable 3.8.2 scripts from index.html. This checks portrait
+  bounds, address wrapping/height, oversize pagination, URI links and totals.
+- Verification boundary: synthetic API tests are not authenticated API proof.
+  Live MyGeotab/native driver-group matching and rendered keyboard/UI checks
+  remain pending; the Chrome relay was disconnected. GitHub publication requested
+  by the user on 2026-11-04; this is not authenticated MyGeotab verification.
+- Regression evidence: 146 local tests pass. The real renderer smoke passes for
+  both copies (four portrait pages, 40 links) and fails against base `809c185`
+  at `Export must be portrait`. Executing the old vehicle-filter/rerun sequence
+  resets one selected trip to all six; the new runner keeps the one selected trip.
+- Review: large/risky plan r2 PASS by an independent GPT 6.1 Sol session. Local
+  implementation review initially found four Medium issues (Run cancellation,
+  identity DOM reset, stale unit callbacks, cached membership) and one Low
+  (long PDF asset heading). All five were reproduced by failing regression
+  assertions and fixed, then independently accepted. Re-review found one further
+  Medium initialization gap (selected parent Legacy catalogs were empty without
+  a change event); it was likewise reproduced and fixed. Final local review PASS
+  by independent GPT 6.1 Sol (`geotab-azure/gpt-6.1-sol`), with all findings
+  accepted fixed and 146 tests plus both PDF smokes independently rerun.
+  Reviewed snapshot SHA-256:
+  `6206a567668d442c641fad0ae8414a199742e01f96d0b470c9089e851edcbdd5`
+  (before adding this receipt; implementation unchanged). This is a local-only
+  review, not a committed-head/MR/CI or release-readiness receipt.
+
+### v1.4.3
 
 - Dates in the preview, CSV, PDF headings/range/created date and PDF filename use
   DD-MM-YYYY. `fmtLegacyDate` is presentation-only; canonical YYYY-MM-DD day keys,
@@ -115,6 +176,10 @@ The historical driver helpers (`reportDriverId`, `isUnassignedDriver`,
 `reportUserName`, `reportDriverInfo`, `resolveReportDrivers`,
 `groupReportDriverDays`) are also copied into the standalone Activity Report.
 Keep those three copies identical; the regression suite checks this.
+
+The Legacy runner/filter controller is now shared, not copied: both pages load
+`legacy-trip-report/src/filters.js` and `filters.css`. Do not reintroduce a
+per-run selector rebuild or rebuild the timeline from driver-filtered trips.
 
 **`esc()` must escape single quotes.** Every attribute here is written with
 single-quoted delimiters and the rison Trip History URLs quote their dates with
@@ -176,6 +241,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.4.3` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.5.0` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).

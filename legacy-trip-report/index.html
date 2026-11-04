@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Legacy Trip History</title>
-  <link rel="stylesheet" href="src/styles.css?v=1.4.3" />
+  <link rel="stylesheet" href="src/styles.css?v=1.5.0" />
+  <link rel="stylesheet" href="src/filters.css?v=1.5.0" />
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 </head>
@@ -25,7 +26,7 @@
       </div>
       <div class="header-meta">
         <span id="db-name" class="db-badge"></span>
-        <span class="version-badge">v1.4.3</span>
+        <span class="version-badge">v1.5.0</span>
       </div>
     </header>
 
@@ -49,7 +50,7 @@
             </select>
             <input type="date" id="filter-from" class="input-date" />
             <input type="date" id="filter-to" class="input-date" />
-            <select id="report-vehicle" class="select hidden"><option value="">All Vehicles</option></select>
+            <div id="legacy-filters" class="legacy-filters" aria-label="Report selection"></div>
             <button id="run-report" class="btn btn-primary">Run</button>
             <button id="export-csv" class="btn btn-secondary hidden">Export CSV</button>
             <button id="export-pdf-legacy" class="btn btn-secondary hidden">Export PDF</button>
@@ -64,7 +65,8 @@
 
   </div>
 
-  <script src="src/logo-data.js?v=1.4.3"></script>
-  <script src="src/app.js?v=1.4.3"></script>
+  <script src="src/logo-data.js?v=1.5.0"></script>
+  <script src="src/filters.js?v=1.5.0"></script>
+  <script src="src/app.js?v=1.5.0"></script>
 </body>
 </html>

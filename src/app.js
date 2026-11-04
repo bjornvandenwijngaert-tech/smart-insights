@@ -149,7 +149,9 @@ geotab.addin.smartInsights = function () {
     initialize: function (api, freshState, callback) {
       try {
         cancelActivityReport();
+        resetLegacyPage();
         state.api = api;
+        var initializationEpoch = state.initializationEpoch;
         if (freshState && freshState.database) {
           state.dbName = freshState.database;
           state.hostVia = "session";
@@ -160,6 +162,7 @@ geotab.addin.smartInsights = function () {
         // are resolved before anything renders — a widget that painted first would
         // show miles to a metric user until the next refresh.
         loadUserUnits(function () {
+          if (state.initializationEpoch !== initializationEpoch || state.api !== api) return;
           setupNav();
           setupReports();
           applyUnitLabels();         // stamp the user's units onto the static markup
@@ -173,6 +176,7 @@ geotab.addin.smartInsights = function () {
           // Keep the loading screen until AddInData has been fetched so the
           // dashboard doesn't flash empty before widgets appear.
           restoreDashboard(function () {
+            if (state.initializationEpoch !== initializationEpoch || state.api !== api) return;
             document.getElementById("loading").classList.add("hidden");
             document.getElementById("main").classList.remove("hidden");
             loadSuggestions();
@@ -184,7 +188,7 @@ geotab.addin.smartInsights = function () {
       if (callback) callback();
     },
     focus: function () {},
-    blur:  function () { if (state.activityRun) cancelActivityReport(); }
+    blur:  function () { if (state.activityRun) cancelActivityReport(); cancelLegacyReport(); }
   };
 };
 
@@ -208,10 +212,12 @@ var L_PER_US_GALLON = 3.785411784;
 // Always calls cb exactly once — on failure we keep the Imperial defaults rather
 // than blocking the add-in from loading.
 function loadUserUnits(cb) {
-  var done = false;
-  function finish() { if (!done) { done = true; cb(); } }
+  var done = false, api = state.api, epoch = state.initializationEpoch;
+  function current() { return !done && state.api === api && state.initializationEpoch === epoch; }
+  function finish() { if (current()) { done = true; cb(); } }
 
   function applyUser(user) {
+    if (!current()) return false;
     if (user && typeof user.isMetric === "boolean") {
       state.unitSystem = user.isMetric ? "Metric" : "Imperial";
       state.fuelEconomyUnit = user.fuelEconomyUnit ||
@@ -224,7 +230,9 @@ function loadUserUnits(cb) {
 
   // Database-wide fallback. Used only when we cannot identify the current user.
   function fallbackToSystemSettings() {
+    if (!current()) return;
     apiCall("Get", { typeName: "SystemSettings" }, function (settings) {
+      if (!current()) return;
       if (settings && settings[0] && settings[0].measurementSystem) {
         state.unitSystem = settings[0].measurementSystem; // "Metric" or "Imperial"
         state.fuelEconomyUnit = state.unitSystem === "Metric" ? "LitersPer100Km" : "MPGImperial";
@@ -234,8 +242,10 @@ function loadUserUnits(cb) {
   }
 
   function fetchUserByName(userName) {
+    if (!current()) return;
     if (!userName) { fallbackToSystemSettings(); return; }
     apiCall("Get", { typeName: "User", search: { name: userName } }, function (users) {
+      if (!current()) return;
       if (!users || !users.length || !applyUser(users[0])) fallbackToSystemSettings();
     }, fallbackToSystemSettings);
   }
@@ -251,7 +261,7 @@ function loadUserUnits(cb) {
         if (!settled) { settled = true; fallbackToSystemSettings(); }
       }, 8000);
       state.api.getSession(function (a) {
-        if (settled) return;
+        if (settled || !current()) return;
         settled = true;
         clearTimeout(guard);
         var creds = (a && a.credentials) || a || {};
@@ -460,6 +470,7 @@ function setupReports() {
   document.getElementById("export-pdf-legacy").addEventListener("click", exportLegacyTripHistoryPdf);
   document.getElementById("report-type").addEventListener("change", function () {
     cancelActivityReport();
+    cancelLegacyReport();
     document.getElementById("report-vehicle").classList.add("hidden");
     document.getElementById("export-csv").classList.add("hidden");
     document.getElementById("export-pdf-legacy").classList.add("hidden");
@@ -470,6 +481,8 @@ function setupReports() {
     document.getElementById("report-output").innerHTML = "<p class='report-placeholder'>Select a date range and click Run.</p>";
     // Show/hide date inputs based on type
     var type = this.value;
+    document.getElementById("legacy-filters").classList.toggle("hidden", type !== "legacy-trip-history");
+    if (type === "legacy-trip-history") setupLegacyFilters();
     var noDate = (type === "maintenance-upcoming");
     document.getElementById("filter-from").style.display = noDate ? "none" : "";
     document.getElementById("filter-to").style.display   = noDate ? "none" : "";
@@ -491,6 +504,10 @@ function setupReports() {
     else if (fmt === "excel") exportActivityExcel();
     else                      exportActivityPdf();
   });
+  // Initialization can retain the selected report type without emitting change.
+  var legacySelected = document.getElementById("report-type").value === "legacy-trip-history";
+  document.getElementById("legacy-filters").classList.toggle("hidden", !legacySelected);
+  if (legacySelected) setupLegacyFilters();
 }
 
 // Recompute filter-from from filter-to based on the selected preset length.
@@ -514,16 +531,19 @@ function runReport() {
   var btn    = document.getElementById("run-report");
   var output = document.getElementById("report-output");
 
-  if (type !== "maintenance-upcoming" && (!from || !to)) { alert("Please select a date range."); return; }
+  if (type !== "maintenance-upcoming" && (!from || !to || from > to)) { alert("Please select a valid date range."); return; }
 
   cancelActivityReport();
+  cancelLegacyReport();
   btn.disabled = true; btn.textContent = "Loading...";
   output.innerHTML = "<p class='placeholder'>Fetching data...</p>";
   document.getElementById("report-summary").classList.add("hidden");
   document.getElementById("export-csv").classList.add("hidden");
+  document.getElementById("export-pdf-legacy").classList.add("hidden");
   document.getElementById("report-vehicle").classList.add("hidden");
 
-  function done() { btn.disabled = false; btn.textContent = "Run"; }
+  var epoch = state.reportEpoch;
+  function done() { if (epoch === state.reportEpoch) { btn.disabled = false; btn.textContent = "Run"; } }
 
   if      (type === "trips")                 runTripsReport(from, to, done);
   else if (type === "carbon-monthly")        runCarbonReport(from, to, done);
@@ -537,6 +557,7 @@ function runReport() {
 
 // ── Trips report (existing) ───────────────────────────────────────────────────
 function runTripsReport(from, to, done) {
+  var apiCall = legacyGuardedReportCall;
   var fromDate = new Date(from + "T00:00:00").toISOString();
   var toDate   = new Date(to   + "T23:59:59").toISOString();
   apiCall("Get", { typeName: "Device", search: {} }, function (devices) {
@@ -587,6 +608,7 @@ function renderTripsOutput(trips, deviceMap) {
 
 // ── Carbon report ─────────────────────────────────────────────────────────────
 function runCarbonReport(from, to, done) {
+  var apiCall = legacyGuardedReportCall;
   var fromDate = new Date(from + "T00:00:00").toISOString();
   var toDate   = new Date(to   + "T23:59:59").toISOString();
   apiCall("Get", { typeName: "Device", search: {} }, function (devices) {
@@ -647,6 +669,7 @@ function renderCarbonOutput(rows) {
 }
 // ── Speeding report (configurable threshold) ──────────────────────────────────
 function runSpeedingReport(from, to, done) {
+  var apiCall = legacyGuardedReportCall;
   // The box holds a number in the user's own unit; convert to the mph the rest of
   // the app stores, then to the km/h the API speaks.
   var thEl    = document.getElementById("filter-speed-thresh");
@@ -700,6 +723,7 @@ function renderSpeedingOutput(trips, deviceMap) {
 
 // ── Upcoming maintenance report ───────────────────────────────────────────────
 function runMaintenanceUpcomingReport(done) {
+  var apiCall = legacyGuardedReportCall;
   apiCall("Get", { typeName: "Device", search: {} }, function (devices) {
     var deviceMap = {};
     devices.forEach(function (d) { deviceMap[d.id] = d.name; });
@@ -765,6 +789,7 @@ function renderMaintenanceUpcomingOutput(items) {
 
 // ── Maintenance spend report ──────────────────────────────────────────────────
 function runMaintenanceSpendReport(from, to, done) {
+  var apiCall = legacyGuardedReportCall;
   var fromDate = new Date(from + "T00:00:00");
   var toDate   = new Date(to   + "T23:59:59");
   apiCall("Get", { typeName: "Device", search: {} }, function (devices) {
@@ -831,6 +856,7 @@ function renderMaintenanceSpendOutput(items) {
 
 // ── Fuel economy report ───────────────────────────────────────────────────────
 function runFuelEconomyReport(from, to, done) {
+  var apiCall = legacyGuardedReportCall;
   var fromDate = new Date(from + "T00:00:00").toISOString();
   var toDate   = new Date(to   + "T23:59:59").toISOString();
   apiCall("Get", { typeName: "Device", search: {} }, function (devices) {
@@ -1108,60 +1134,7 @@ function addressForPoint(pt, addrMap) {
   return resolved || (pt.y.toFixed(5) + ", " + pt.x.toFixed(5));
 }
 
-function runLegacyTripHistoryReport(from, to, done) {
-  var fromDate = new Date(from + "T00:00:00").toISOString();
-  var toDate   = new Date(to   + "T23:59:59").toISOString();
-  apiCall("Get", { typeName: "Device", search: {} }, function (devices) {
-    var deviceMap = {};
-    devices.forEach(function (d) { deviceMap[d.id] = d.name; });
-    state.deviceMap = deviceMap;
-    apiCall("Get", { typeName: "Trip", search: { fromDate: fromDate, toDate: toDate } }, function (trips) {
-      if (!trips.length) {
-        document.getElementById("report-output").innerHTML = "<p class='placeholder'>No trips found for this period.</p>";
-        done(); return;
-      }
-      document.getElementById("report-output").innerHTML = "<p class='placeholder'>Resolving driver names...</p>";
-      resolveReportDrivers(trips, function () {
-      var byDevice = buildLegacyByDevice(trips, deviceMap);
-      state.reportRaw  = trips;
-      state.reportData = trips;
-      state.legacyByDevice = byDevice;
-      populateReportVehicleFilter(trips, deviceMap);
-
-      document.getElementById("report-output").innerHTML = "<p class='placeholder'>Resolving stop addresses\u2026</p>";
-      resolveStopAddresses(byDevice, function (addrMap) {
-        state.legacyAddrMap = addrMap;
-
-        // Report-wide KPIs (whole period, all vehicles)
-        var totalDistM  = trips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
-        var totalDrive  = trips.reduce(function (s, t) { return s + (parseDurationToMins(t.drivingDuration) != null ? parseDurationToMins(t.drivingDuration) : durationMins(t.start, t.stop)); }, 0);
-        var totalIdle   = trips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
-        // Overnight parks carry no stop figure, so they are not stops here either.
-        // Counting them in the denominator while dropping them from the total would
-        // make the average disagree with the two cards it sits between.
-        var counted     = trips.filter(function (t) { return legacyStopMins(t) != null; });
-        var totalStop   = counted.reduce(function (s, t) { return s + legacyStopMins(t); }, 0);
-        var numStops    = counted.length;
-        var avgStop     = numStops ? totalStop / numStops : 0;
-
-        showReportSummary([
-          summaryCard("Total Distance",  distVal(totalDistM).toFixed(0), distUnit()),
-          summaryCard("Total Stop Duration", fmtDurWhole(totalStop), ""),
-          summaryCard("Total Idle Time", fmtDurWhole(totalIdle), ""),
-          summaryCard("Total Travel Duration", fmtDurWhole(totalDrive), ""),
-          summaryCard("Average Stop Duration", fmtDurWhole(avgStop), ""),
-          summaryCard("Number of Stops", numStops, "")
-        ]);
-
-        renderLegacyTripHistoryOutput(byDevice, addrMap);
-        document.getElementById("export-csv").classList.remove("hidden");
-        document.getElementById("export-pdf-legacy").classList.remove("hidden");
-        done();
-      });
-      });
-    }, function (err) { reportError(err); done(); });
-  }, function (err) { reportError(err); done(); });
-}
+// Legacy's runner and page-lifetime selection controller live in shared filters.js.
 
 // Build the day-block rows for one vehicle's trip list, including the synthetic
 // "Starting from" / "(Ignition On)" lead-in row derived from the previous trip
@@ -1324,7 +1297,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
           "<td>" + fmtTime(t.start) + "</td>" +
           "<td>" + fmtDist(t.distance, 2) + "</td>" +
           "<td>" + fmtDurPrecise(driveMins) + "</td>" +
-          "<td>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>" +
+          "<td class='legacy-address'>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>" +
           "<td>" + fmtTime(t.stop) + "</td>" +
           "<td>" + fmtDurPrecise(idleMins) + "</td>" +
           "<td>" + stopStr + "</td>" +
@@ -1351,7 +1324,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
         ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='4'>(Ignition On)</td><td>\u2014</td><td></td><td></td></tr>"
         : "";
 
-      return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table'>" +
+      return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table legacy-table'>" +
         "<thead><tr><th>Start Time</th><th>Distance</th><th>Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th><th>Trip History</th></tr></thead>" +
         "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml +
         totalsHtml +
@@ -1816,8 +1789,16 @@ function updateTripReportSummary(trips, legacy) {
   ]);
 }
 
+function updateLegacyReportSummary(trips) { updateTripReportSummary(trips, true); }
+
 function filterReportByVehicle(vid) {
   var type = document.getElementById("report-type").value;
+  if (type === "legacy-trip-history") {
+    var f = legacyFilters();
+    f.mode = "assets"; f.assets = { all: !vid, ids: {} };
+    if (vid) f.assets.ids[vid] = true;
+    applyLegacyFilters(); return;
+  }
   var raw  = state.reportRaw;
   if (!vid) {
     state.reportData = raw;
@@ -1834,12 +1815,6 @@ function filterReportByVehicle(vid) {
   else if (type === "maintenance-upcoming") renderMaintenanceUpcomingOutput(state.reportData);
   else if (type === "maintenance-spend")    renderMaintenanceSpendOutput(state.reportData);
   else if (type === "fuel-economy-daily")   renderFuelEconomyOutput(state.reportData);
-  else if (type === "legacy-trip-history") {
-    var filteredByDevice = buildLegacyByDevice(state.reportData, state.deviceMap);
-    state.legacyByDevice = filteredByDevice;
-    updateTripReportSummary(state.reportData, true);
-    renderLegacyTripHistoryOutput(filteredByDevice, state.legacyAddrMap || {});
-  }
   else if (type === "activity-report") {
     var actFilteredByDevice = buildActivityByDevice(state.reportData, state.deviceMap);
     state.activityByDevice = actFilteredByDevice;
@@ -1891,7 +1866,7 @@ function exportReportCsv() {
   } else if (type === "legacy-trip-history") {
     var addrMap = state.legacyAddrMap || {};
     rows = [["Vehicle","Driver","Date","Start Time","Distance (" + distUnit() + ")","Driving Duration","Stop Location","Arrival Time","Idle Duration","Stop Duration"]];
-    var byDevice = buildLegacyByDevice(data, state.deviceMap);
+    var byDevice = state.legacyByDevice;
     Object.keys(byDevice).forEach(function (vid) {
       var v = byDevice[vid];
       v.driverGroups.forEach(function (driverGroup) {
@@ -3425,10 +3400,11 @@ function exportLegacyTripHistoryPdf() {
   var byDevice = state.legacyByDevice;
   var addrMap  = state.legacyAddrMap || {};
   if (!byDevice || !Object.keys(byDevice).length) { alert("Run the report first."); return; }
-  var from = document.getElementById("filter-from").value;
-  var to   = document.getElementById("filter-to").value;
+  var range = state.legacyReportRange;
+  var from = range.from;
+  var to   = range.to;
 
-  var doc    = new jspdf.jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  var doc    = new jspdf.jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   var pageW  = doc.internal.pageSize.getWidth();
   var pageH  = doc.internal.pageSize.getHeight();
   var margin = 14;
@@ -3491,8 +3467,11 @@ function exportLegacyTripHistoryPdf() {
     var v = byDevice[vid];
     if (yPos > pageH - 40) { doc.addPage(); yPos = 16; }
     doc.setTextColor(20, 20, 20); doc.setFontSize(12); doc.setFont("helvetica", "bold");
-    doc.text(v.name, margin, yPos);
-    yPos += 6;
+    var assetLines = doc.splitTextToSize(v.name, pageW - margin * 2);
+    var assetHeight = assetLines.length * 5 + 1;
+    if (yPos + assetHeight > pageH - 30) { doc.addPage(); yPos = 16; }
+    doc.text(assetLines, margin, yPos);
+    yPos += assetHeight;
     v.driverGroups.forEach(function (driverGroup, driverIndex) {
     if (yPos > pageH - 45) { doc.addPage(); yPos = 16; }
     doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(45, 55, 72);
@@ -3552,9 +3531,13 @@ function exportLegacyTripHistoryPdf() {
         head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + fmtLegacyDate(block.date), colSpan: 8 }]].concat(headers),
         body: body,
         margin: { left: margin, right: margin },
-        styles: { fontSize: 8, cellPadding: 2.2, textColor: [45, 55, 72] },
+        tableWidth: pageW - margin * 2,
+        rowPageBreak: "avoid",
+        styles: { fontSize: 7.5, cellPadding: 1.5, overflow: "linebreak", valign: "middle", textColor: [45, 55, 72] },
         headStyles: { fillColor: [0, 120, 212], textColor: 255, fontStyle: "bold", fontSize: 8 },
-        columnStyles: { 7: { cellWidth: 22 } },
+        // Fixed portrait widths total 182mm. Addresses wrap, never widen the table.
+        columnStyles: { 0: { cellWidth: 20 }, 1: { cellWidth: 18 }, 2: { cellWidth: 23 },
+          3: { cellWidth: 33 }, 4: { cellWidth: 20 }, 5: { cellWidth: 23 }, 6: { cellWidth: 23 }, 7: { cellWidth: 22 } },
         didDrawCell: function (data) {
           var url = data.cell.raw && data.cell.raw.tripHistoryUrl;
           // AutoTable retains raw metadata on split rows; do not link blank

@@ -115,7 +115,9 @@ geotab.addin.legacyTripHistory = function () {
   return {
     initialize: function (api, freshState, callback) {
       try {
+        resetLegacyPage();
         state.api = api;
+        var initializationEpoch = state.initializationEpoch;
         if (freshState && freshState.database) {
           state.dbName = freshState.database;
           state.hostVia = "session";
@@ -124,6 +126,7 @@ geotab.addin.legacyTripHistory = function () {
         resolveHost();
         setupReports();
         loadUserUnits(function () {
+          if (state.initializationEpoch !== initializationEpoch || state.api !== api) return;
           document.getElementById("loading").classList.add("hidden");
           document.getElementById("main").classList.remove("hidden");
           if (callback) callback();
@@ -134,7 +137,7 @@ geotab.addin.legacyTripHistory = function () {
       }
     },
     focus: function () {},
-    blur:  function () {}
+    blur:  function () { cancelLegacyReport(); }
   };
 };
 
@@ -147,6 +150,7 @@ function setupReports() {
   document.getElementById("export-csv").addEventListener("click", exportReportCsv);
   document.getElementById("export-pdf-legacy").addEventListener("click", exportLegacyTripHistoryPdf);
   document.getElementById("legacy-length").addEventListener("change", applyLegacyLength);
+  setupLegacyFilters();
 }
 
 // Recompute filter-from from filter-to based on the selected preset length.
@@ -167,14 +171,13 @@ function runReport() {
   var to     = document.getElementById("filter-to").value;
   var btn    = document.getElementById("run-report");
   var output = document.getElementById("report-output");
-  if (!from || !to) { alert("Please select a date range."); return; }
+  if (!from || !to || from > to) { alert("Please select a valid date range."); return; }
 
   btn.disabled = true; btn.textContent = "Loading...";
   output.innerHTML = "<p class='placeholder'>Fetching data...</p>";
   document.getElementById("report-summary").classList.add("hidden");
   document.getElementById("export-csv").classList.add("hidden");
   document.getElementById("export-pdf-legacy").classList.add("hidden");
-  document.getElementById("report-vehicle").classList.add("hidden");
 
   function done() { btn.disabled = false; btn.textContent = "Run"; }
   runLegacyTripHistoryReport(from, to, done);
@@ -231,10 +234,12 @@ function fmtDurPrecise(mins) {
 // only display/export values are converted. Never use the trip driver's settings.
 var MI_PER_KM = 0.621371;
 function loadUserUnits(cb) {
-  var done = false;
-  function finish() { if (!done) { done = true; cb(); } }
+  var done = false, api = state.api, epoch = state.initializationEpoch;
+  function current() { return !done && state.api === api && state.initializationEpoch === epoch; }
+  function finish() { if (current()) { done = true; cb(); } }
 
   function applyUser(user) {
+    if (!current()) return false;
     if (user && typeof user.isMetric === "boolean") {
       state.unitSystem = user.isMetric ? "Metric" : "Imperial";
       state.fuelEconomyUnit = user.fuelEconomyUnit ||
@@ -247,7 +252,9 @@ function loadUserUnits(cb) {
 
   // Database-wide fallback. Used only when we cannot identify the current user.
   function fallbackToSystemSettings() {
+    if (!current()) return;
     apiCall("Get", { typeName: "SystemSettings" }, function (settings) {
+      if (!current()) return;
       if (settings && settings[0] && settings[0].measurementSystem) {
         state.unitSystem = settings[0].measurementSystem; // "Metric" or "Imperial"
         state.fuelEconomyUnit = state.unitSystem === "Metric" ? "LitersPer100Km" : "MPGImperial";
@@ -257,8 +264,10 @@ function loadUserUnits(cb) {
   }
 
   function fetchUserByName(userName) {
+    if (!current()) return;
     if (!userName) { fallbackToSystemSettings(); return; }
     apiCall("Get", { typeName: "User", search: { name: userName } }, function (users) {
+      if (!current()) return;
       if (!users || !users.length || !applyUser(users[0])) fallbackToSystemSettings();
     }, fallbackToSystemSettings);
   }
@@ -271,7 +280,7 @@ function loadUserUnits(cb) {
         if (!settled) { settled = true; fallbackToSystemSettings(); }
       }, 8000);
       state.api.getSession(function (a) {
-        if (settled) return;
+        if (settled || !current()) return;
         settled = true;
         clearTimeout(guard);
         var creds = (a && a.credentials) || a || {};
@@ -532,59 +541,7 @@ function tripHistoryCell(deviceId, trip) {
 }
 
 // ─── Run ───────────────────────────────────────────────────────────────────
-function runLegacyTripHistoryReport(from, to, done) {
-  var fromDate = new Date(from + "T00:00:00").toISOString();
-  var toDate   = new Date(to   + "T23:59:59").toISOString();
-  apiCall("Get", { typeName: "Device", search: {} }, function (devices) {
-    var deviceMap = {};
-    devices.forEach(function (d) { deviceMap[d.id] = d.name; });
-    state.deviceMap = deviceMap;
-    apiCall("Get", { typeName: "Trip", search: { fromDate: fromDate, toDate: toDate } }, function (trips) {
-      if (!trips.length) {
-        document.getElementById("report-output").innerHTML = "<p class='placeholder'>No trips found for this period.</p>";
-        done(); return;
-      }
-      document.getElementById("report-output").innerHTML = "<p class='placeholder'>Resolving driver names...</p>";
-      resolveReportDrivers(trips, function () {
-      var byDevice = buildLegacyByDevice(trips, deviceMap);
-      state.reportRaw  = trips;
-      state.reportData = trips;
-      state.legacyByDevice = byDevice;
-      populateReportVehicleFilter(trips, deviceMap);
-
-      document.getElementById("report-output").innerHTML = "<p class='placeholder'>Resolving stop addresses\u2026</p>";
-      resolveStopAddresses(byDevice, function (addrMap) {
-        state.legacyAddrMap = addrMap;
-
-        var totalDistM = trips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
-        var totalDrive = trips.reduce(function (s, t) { var dm = parseDurationToMins(t.drivingDuration); return s + (dm != null ? dm : durationMins(t.start, t.stop)); }, 0);
-        var totalIdle  = trips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
-        // Overnight parks carry no stop figure, so they are not stops here either.
-        // Counting them in the denominator while dropping them from the total would
-        // make the average disagree with the two cards it sits between.
-        var counted    = trips.filter(function (t) { return legacyStopMins(t) != null; });
-        var totalStop  = counted.reduce(function (s, t) { return s + legacyStopMins(t); }, 0);
-        var numStops   = counted.length;
-        var avgStop    = numStops ? totalStop / numStops : 0;
-
-        showReportSummary([
-          summaryCard("Total Distance",         distVal(totalDistM).toFixed(0), distUnit()),
-          summaryCard("Total Stop Duration",    fmtDurWhole(totalStop), ""),
-          summaryCard("Total Idle Time",        fmtDurWhole(totalIdle), ""),
-          summaryCard("Total Travel Duration",  fmtDurWhole(totalDrive), ""),
-          summaryCard("Average Stop Duration",  fmtDurWhole(avgStop), ""),
-          summaryCard("Number of Stops",        numStops, "")
-        ]);
-
-        renderLegacyTripHistoryOutput(byDevice, addrMap);
-        document.getElementById("export-csv").classList.remove("hidden");
-        document.getElementById("export-pdf-legacy").classList.remove("hidden");
-        done();
-      });
-      });
-    }, function (err) { reportError(err); done(); });
-  }, function (err) { reportError(err); done(); });
-}
+// The runner and page-lifetime selection controller live in shared filters.js.
 
 // ─── Render (in-app preview) ───────────────────────────────────────────────
 // Presentation only: keep canonical YYYY-MM-DD keys for grouping and API inputs.
@@ -632,7 +589,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
           "<td>" + fmtTime(t.start) + "</td>" +
           "<td>" + fmtDist(t.distance, 2) + "</td>" +
           "<td>" + fmtDurPrecise(driveMins) + "</td>" +
-          "<td>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>" +
+          "<td class='legacy-address'>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>" +
           "<td>" + fmtTime(t.stop) + "</td>" +
           "<td>" + fmtDurPrecise(idleMins) + "</td>" +
           "<td>" + stopStr + "</td>" +
@@ -659,7 +616,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
         ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='4'>(Ignition On)</td><td>\u2014</td><td></td><td></td></tr>"
         : "";
 
-      return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table'>" +
+      return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table legacy-table'>" +
         "<thead><tr><th>Start Time</th><th>Distance</th><th>Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th><th>Trip History</th></tr></thead>" +
         "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml +
         totalsHtml +
@@ -711,12 +668,10 @@ function updateLegacyReportSummary(trips) {
 }
 
 function filterReportByVehicle(vid) {
-  var raw = state.reportRaw;
-  state.reportData = !vid ? raw : raw.filter(function (t) { return t.device && t.device.id === vid; });
-  var filteredByDevice = buildLegacyByDevice(state.reportData, state.deviceMap);
-  state.legacyByDevice = filteredByDevice;
-  updateLegacyReportSummary(state.reportData);
-  renderLegacyTripHistoryOutput(filteredByDevice, state.legacyAddrMap || {});
+  var f = legacyFilters();
+  f.mode = "assets"; f.assets = { all: !vid, ids: {} };
+  if (vid) f.assets.ids[vid] = true;
+  applyLegacyFilters();
 }
 
 // ─── CSV export ────────────────────────────────────────────────────────────
@@ -725,7 +680,7 @@ function exportReportCsv() {
   if (!data || !data.length) return;
   var addrMap = state.legacyAddrMap || {};
   var rows = [["Vehicle", "Driver", "Date", "Start Time", "Distance (" + distUnit() + ")", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"]];
-  var byDevice = buildLegacyByDevice(data, state.deviceMap);
+  var byDevice = state.legacyByDevice;
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
     v.driverGroups.forEach(function (driverGroup) {
@@ -768,10 +723,11 @@ function exportLegacyTripHistoryPdf() {
   var byDevice = state.legacyByDevice;
   var addrMap  = state.legacyAddrMap || {};
   if (!byDevice || !Object.keys(byDevice).length) { alert("Run the report first."); return; }
-  var from = document.getElementById("filter-from").value;
-  var to   = document.getElementById("filter-to").value;
+  var range = state.legacyReportRange;
+  var from = range.from;
+  var to   = range.to;
 
-  var doc    = new jspdf.jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  var doc    = new jspdf.jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   var pageW  = doc.internal.pageSize.getWidth();
   var pageH  = doc.internal.pageSize.getHeight();
   var margin = 14;
@@ -834,8 +790,11 @@ function exportLegacyTripHistoryPdf() {
     var v = byDevice[vid];
     if (yPos > pageH - 40) { doc.addPage(); yPos = 16; }
     doc.setTextColor(20, 20, 20); doc.setFontSize(12); doc.setFont("helvetica", "bold");
-    doc.text(v.name, margin, yPos);
-    yPos += 6;
+    var assetLines = doc.splitTextToSize(v.name, pageW - margin * 2);
+    var assetHeight = assetLines.length * 5 + 1;
+    if (yPos + assetHeight > pageH - 30) { doc.addPage(); yPos = 16; }
+    doc.text(assetLines, margin, yPos);
+    yPos += assetHeight;
     v.driverGroups.forEach(function (driverGroup, driverIndex) {
     if (yPos > pageH - 45) { doc.addPage(); yPos = 16; }
     doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(45, 55, 72);
@@ -895,9 +854,13 @@ function exportLegacyTripHistoryPdf() {
         head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + fmtLegacyDate(block.date), colSpan: 8 }]].concat(headers),
         body: body,
         margin: { left: margin, right: margin },
-        styles: { fontSize: 8, cellPadding: 2.2, textColor: [45, 55, 72] },
+        tableWidth: pageW - margin * 2,
+        rowPageBreak: "avoid",
+        styles: { fontSize: 7.5, cellPadding: 1.5, overflow: "linebreak", valign: "middle", textColor: [45, 55, 72] },
         headStyles: { fillColor: [0, 120, 212], textColor: 255, fontStyle: "bold", fontSize: 8 },
-        columnStyles: { 7: { cellWidth: 22 } },
+        // Fixed portrait widths total 182mm. Addresses wrap, never widen the table.
+        columnStyles: { 0: { cellWidth: 20 }, 1: { cellWidth: 18 }, 2: { cellWidth: 23 },
+          3: { cellWidth: 33 }, 4: { cellWidth: 20 }, 5: { cellWidth: 23 }, 6: { cellWidth: 23 }, 7: { cellWidth: 22 } },
         didDrawCell: function (data) {
           var url = data.cell.raw && data.cell.raw.tripHistoryUrl;
           // AutoTable retains raw metadata on split rows; do not link blank
