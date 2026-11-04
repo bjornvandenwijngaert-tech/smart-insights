@@ -1789,8 +1789,6 @@ function updateTripReportSummary(trips, legacy) {
   ]);
 }
 
-function updateLegacyReportSummary(trips) { updateTripReportSummary(trips, true); }
-
 function filterReportByVehicle(vid) {
   var type = document.getElementById("report-type").value;
   if (type === "legacy-trip-history") {

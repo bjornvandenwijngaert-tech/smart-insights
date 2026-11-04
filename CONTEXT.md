@@ -35,9 +35,17 @@ smart-insights/
 
 ---
 
-## Current version: v2.13.0
+## Current version: v2.13.1
 
 ### Changelog since v2.2.0
+- **v2.13.1** — Legacy group choices show customer groups first, with SDK-known
+  system branches behind an accessible Show/Hide system groups control. Company
+  remains selectable and distinct from All groups. Dropdowns close on outside
+  clicks or Escape; selection state is unchanged. Legacy's six on-screen summary
+  tiles are removed; table/PDF totals and other reports' tiles remain unchanged.
+  Filter hints move into the dropdown, with visible error-summary text and an
+  external screen-reader live status. Scoped 34px controls align the toolbar.
+  Standalone Legacy v1.5.1; GitHub publication requested by the user on 2026-11-04.
 - **v2.13.0** — Legacy PDF returns to portrait A4, with a fixed 33mm address
   column and automatic line wrapping/row height. Group-aware Assets/Drivers
   multi-selection is available before Run, including search and all-except-one.

@@ -56,7 +56,8 @@ legacy-trip-report/
    method (coordinates never leave Geotab; deduped to ~1m precision; batched up
    to 400/call under the 450/min limit). No third-party geocoder.
 5. Render per-vehicle/per-driver/per-day tables: "Starting from" lead-in, "(Ignition On)"
-   marker, trip rows, daily total. KPIs across the whole range.
+   marker, trip rows and daily/driver/vehicle totals. No on-screen KPI tiles;
+   the PDF retains its report-wide summary.
 6. Export CSV (one trip per row, with that trip's singular `Driver`) or branded
    PDF (Geotab logo, navy header, KPI grid, vehicle/driver/day sections). PDF table
    headers repeat the vehicle, driver and date on continuation pages.
@@ -68,7 +69,40 @@ uses driver home `driverGroups` (not `companyGroups`, `reportGroups` or security
 groups). Unknown drivers have no group membership, so appear only under All
 groups. Driver trips can span multiple assets, independent of asset group.
 
-## Current version: v1.5.0
+## Current version: v1.5.1
+
+**Why:** System-created groups cluttered the primary list, dropdowns stayed open
+after outside clicks, and the inline hint made the new controls misalign. The
+customer also requested removing the six on-screen summary tiles.
+
+**Approach:** Present customer-created groups first and collapse system branches
+behind a Show/Hide button. Classification uses documented SDK KnownIds and their
+descendants, never localized names. Company is a system option itself, not a
+system subtree: its customer-created descendants remain in the main list, and
+Company retains its distinct filtering semantics from unrestricted All groups.
+
+- Outside clicks close either picker without changing selections, suppressing
+  clicks, or interfering with native checkboxes. One document listener per
+  wrapper survives reinitialization; Escape still returns focus to the summary.
+- Hints/Retry stay inside the group panel. A visible Groups unavailable summary
+  plus a visually-hidden live status outside collapsed panels expose failures
+  without adding a toolbar row. Existing controls and summaries align at 34px;
+  narrow screens still wrap naturally.
+- Legacy preview generates no summary-card tiles. Table footers and PDF summary
+  totals remain; parent non-Legacy report tiles are untouched.
+- Verification: 159 local checks plus both real PDF rendering smokes. Old-source
+  probes reproduce the outside-click, hidden failure and summary-tile assertions.
+  Synthetic event tests are not native browser/keyboard or visual alignment
+  proof: Chrome relay is disconnected, so those live checks remain pending.
+- Plan r2 independently adopted; final local code review PASS by an independent
+  GPT 6.1 Sol session, with 159 tests and both PDF smokes independently rerun.
+  Reviewed diff SHA-256: `dc84927a64de8d23586b163e9452e8d1ddcbefdf8eeb7ad520a553a59a989b7c`
+  (before adding this receipt; implementation unchanged). This is not native
+  browser verification or a committed-head/CI receipt. GitHub publication was
+  explicitly requested by the user on 2026-11-04; live visual verification is
+  still pending.
+
+### v1.5.0
 
 **Why:** Landscape PDFs are unwanted, and the old post-run single-vehicle
 selector reset whenever the report was rerun.
@@ -241,6 +275,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.5.0` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.5.1` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).

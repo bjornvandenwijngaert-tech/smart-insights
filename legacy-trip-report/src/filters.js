@@ -5,7 +5,7 @@
 function legacyFilters() {
   if (!state.legacyFilters) state.legacyFilters = {
     mode: "assets", groups: [], assets: { all: true, ids: {} }, drivers: { all: true, ids: {} },
-    devices: [], users: [], groupMap: {}, ready: false, loading: false, waiters: []
+    devices: [], users: [], groupMap: {}, ready: false, loading: false, error: false, showSystemGroups: false, waiters: []
   };
   return state.legacyFilters;
 }
@@ -48,7 +48,8 @@ function resetLegacyPage() {
     var element = document.getElementById(id); if (element) element.open = false;
   });
   var mode = document.getElementById("legacy-mode"); if (mode) mode.value = "assets";
-  var groupSummary = document.getElementById("legacy-group-summary"); if (groupSummary) groupSummary.textContent = "All groups";
+  var groupSummary = document.getElementById("legacy-group-summary");
+  if (groupSummary) { groupSummary.textContent = "All groups"; groupSummary.classList.remove("has-error"); }
   var entitySummary = document.getElementById("legacy-entity-summary"); if (entitySummary) entitySummary.textContent = "All assets";
   var all = document.getElementById("legacy-select-all");
   if (all) { all.checked = false; all.indeterminate = false; all.disabled = true; }
@@ -78,13 +79,15 @@ function setupLegacyFilters() {
   wrap.innerHTML = "<details id='legacy-group-picker' class='legacy-picker'><summary id='legacy-group-summary'>All groups</summary>" +
     "<div class='legacy-picker-panel'><label>Find groups<input id='legacy-group-search' type='search' class='select'></label>" +
     "<label class='legacy-check'><input id='legacy-all-groups' type='checkbox' checked> All groups</label>" +
-    "<div id='legacy-group-options' class='legacy-options'></div></div></details>" +
+    "<div id='legacy-group-options' class='legacy-options'></div>" +
+    "<p class='legacy-picker-hint'>Groups include subgroups; driver groups are home groups.</p>" +
+    "<button id='legacy-filter-retry' type='button' class='btn btn-secondary hidden'>Retry filters</button></div></details>" +
     "<label class='legacy-mode-label'>Report by<select id='legacy-mode' class='select'><option value='assets'>Assets</option><option value='drivers'>Drivers</option></select></label>" +
     "<details id='legacy-entity-picker' class='legacy-picker'><summary id='legacy-entity-summary'>All assets</summary>" +
     "<div class='legacy-picker-panel'><label><span id='legacy-search-label'>Find assets</span><input id='legacy-entity-search' type='search' class='select'></label>" +
     "<label class='legacy-check'><input id='legacy-select-all' type='checkbox'> Select all filtered</label>" +
     "<div id='legacy-entity-options' class='legacy-options'></div><p id='legacy-selection-count' role='status'></p></div></details>" +
-    "<span id='legacy-filter-status' role='status'></span><button id='legacy-filter-retry' type='button' class='btn btn-secondary hidden'>Retry filters</button>";
+    "<span id='legacy-filter-status' class='legacy-sr-only' role='status'></span>";
   document.getElementById("legacy-mode").value = legacyFilters().mode;
   document.getElementById("legacy-mode").addEventListener("change", function () {
     legacyFilters().mode = this.value;
@@ -100,7 +103,12 @@ function setupLegacyFilters() {
     f.groups = f.groups.filter(function (value) { return value !== id; });
     if (event.target.checked) f.groups.push(id);
     document.getElementById("legacy-all-groups").checked = !f.groups.length;
-    updateLegacyGroupSummary(); renderLegacyChoices(); applyLegacyFilters();
+    updateLegacyGroupSummary(); updateLegacySystemGroups(); renderLegacyChoices(); applyLegacyFilters();
+  });
+  document.getElementById("legacy-group-options").addEventListener("click", function (event) {
+    if (event.target.id !== "legacy-system-toggle") return;
+    legacyFilters().showSystemGroups = !legacyFilters().showSystemGroups;
+    updateLegacySystemGroups();
   });
   document.getElementById("legacy-entity-options").addEventListener("change", function (event) {
     var id = event.target.getAttribute("data-entity");
@@ -120,6 +128,12 @@ function setupLegacyFilters() {
       if (event.key === "Escape") { this.open = false; this.querySelector("summary").focus(); }
     });
   });
+  document.addEventListener("click", function (event) {
+    ["legacy-group-picker", "legacy-entity-picker"].forEach(function (id) {
+      var picker = document.getElementById(id);
+      if (picker && !picker.contains(event.target)) picker.open = false;
+    });
+  });
   loadLegacyCatalog(function () {});
 }
 function loadLegacyCatalog(done, failure, refresh) {
@@ -127,7 +141,8 @@ function loadLegacyCatalog(done, failure, refresh) {
   if (f.ready && !refresh) { done(); return; }
   f.waiters.push({ done: done, failure: failure });
   if (f.loading) return;
-  f.loading = true; f.ready = false;
+  f.loading = true; f.ready = false; f.error = false;
+  updateLegacyGroupSummary();
   document.getElementById("legacy-filter-status").textContent = "Loading filters...";
   document.getElementById("legacy-filter-retry").classList.add("hidden");
   var pending = 3, records = {}, settled = false;
@@ -135,7 +150,8 @@ function loadLegacyCatalog(done, failure, refresh) {
   function current() { return state.legacyFilters === f && !settled; }
   function fail(err) {
     if (!current()) return;
-    settled = true; clearTimeout(timer); f.loading = false;
+    settled = true; clearTimeout(timer); f.loading = false; f.error = true;
+    updateLegacyGroupSummary();
     document.getElementById("legacy-filter-status").textContent = "Filters unavailable. Retry before running the report.";
     document.getElementById("legacy-filter-retry").classList.remove("hidden");
     var waiters = f.waiters.splice(0);
@@ -154,7 +170,7 @@ function loadLegacyCatalog(done, failure, refresh) {
       f.users = records.User;
       f.groupMap = {};
       records.Group.forEach(function (group) { f.groupMap[group.id] = group; });
-      document.getElementById("legacy-filter-status").textContent = "Groups include subgroups; driver groups are home groups.";
+      document.getElementById("legacy-filter-status").textContent = "Filters ready.";
       renderLegacyGroups(); renderLegacyChoices();
       f.waiters.splice(0).forEach(function (waiter) { waiter.done(); });
     }, fail);
@@ -187,6 +203,25 @@ function legacyCompanyGroups() {
     });
   }
   return Object.keys(f.groupMap).filter(function (id) { return allowed[id]; }).map(function (id) { return f.groupMap[id]; });
+}
+// Stable SDK KnownIds, not display names (which can be localized or renamed).
+// Include known leaves for restricted users whose catalog omits their parents.
+var LEGACY_SYSTEM_GROUP_ROOTS = [
+  "GroupAssetInformationId", "GroupAssetPurposeId", "GroupAssetTypeId", "GroupPowertrainAndFuelTypeId",
+  "GroupDriverActivityGroupId", "GroupBusinessGroupId", "GroupPersonalGroupId", "GroupDefectsId", "GroupColdChainId", "GroupShareableLinkGroupId",
+  "GroupVehicleId", "GroupTrailerId", "GroupContainerId", "GroupEquipmentId", "GroupVehicleDefectsId", "GroupTrailerDefectsId",
+  "GroupManuallyClassifiedPowertrainId", "GroupBatteryElectricVehicleId", "GroupInternalCombustionEngineId",
+  "GroupElectricHybridPluginId", "GroupPluginHybridElectricVehicleId", "GroupFuelCellElectricVehicleId",
+  "GroupBiodieselId", "GroupCompressedNaturalGasId", "GroupDieselId", "GroupEthanolId", "GroupGasolinePetrolId", "GroupOtherFuelId", "GroupPropaneLiquifiedPetroleumGasId"
+];
+function legacyGroupSections() {
+  var system = legacyDescendants(LEGACY_SYSTEM_GROUP_ROOTS), sections = { custom: [], system: [] };
+  // Company is a selectable built-in node, but its custom descendants stay first.
+  system.GroupCompanyId = true;
+  legacyCompanyGroups().sort(function (a, b) { return a.name.localeCompare(b.name) || a.id.localeCompare(b.id); }).forEach(function (group) {
+    sections[system[group.id] ? "system" : "custom"].push(group);
+  });
+  return sections;
 }
 function legacyInGroups(entity, mode) {
   var f = legacyFilters();
@@ -231,16 +266,33 @@ function setLegacySelected(id, checked) {
 }
 function updateLegacyGroupSummary() {
   var f = legacyFilters();
-  document.getElementById("legacy-group-summary").textContent = f.groups.length ? f.groups.length + " group(s)" : "All groups";
+  var summary = document.getElementById("legacy-group-summary");
+  summary.textContent = f.error ? "Groups unavailable" : f.loading ? "Loading groups..." : f.groups.length ? f.groups.length + " group(s)" : "All groups";
+  summary.classList.toggle("has-error", f.error);
+}
+function updateLegacySystemGroups() {
+  var f = legacyFilters(), query = document.getElementById("legacy-group-search").value.toLocaleLowerCase();
+  var system = legacyGroupSections().system;
+  var count = system.filter(function (group) { return group.name.toLocaleLowerCase().indexOf(query) !== -1; }).length;
+  var selected = system.filter(function (group) { return f.groups.indexOf(group.id) !== -1; }).length;
+  var button = document.getElementById("legacy-system-toggle");
+  button.setAttribute("aria-expanded", String(f.showSystemGroups));
+  button.textContent = (f.showSystemGroups ? "Hide" : "Show") + " system groups (" + count + (query ? (count === 1 ? " match" : " matches") : "") + ")" + (selected ? " — " + selected + " selected" : "");
+  document.getElementById("legacy-system-options").classList.toggle("hidden", !f.showSystemGroups);
 }
 function renderLegacyGroups() {
   var f = legacyFilters(), query = document.getElementById("legacy-group-search").value.toLocaleLowerCase();
   document.getElementById("legacy-all-groups").checked = !f.groups.length;
-  document.getElementById("legacy-group-options").innerHTML = legacyCompanyGroups().sort(function (a, b) { return a.name.localeCompare(b.name); }).filter(function (group) {
-    return group.name.toLocaleLowerCase().indexOf(query) !== -1;
-  }).map(function (group) {
-    return "<label class='legacy-check'><input type='checkbox' data-group='" + esc(group.id) + "'" + (f.groups.indexOf(group.id) !== -1 ? " checked" : "") + "> " + esc(group.name) + "</label>";
-  }).join("") || "<p>No matching groups.</p>";
+  var sections = legacyGroupSections();
+  function choices(groups) {
+    return groups.filter(function (group) { return group.name.toLocaleLowerCase().indexOf(query) !== -1; }).map(function (group) {
+      return "<label class='legacy-check'><input type='checkbox' data-group='" + esc(group.id) + "'" + (f.groups.indexOf(group.id) !== -1 ? " checked" : "") + "> " + esc(group.name) + "</label>";
+    }).join("");
+  }
+  document.getElementById("legacy-group-options").innerHTML = (choices(sections.custom) || "<p>No matching customer groups.</p>") +
+    "<button type='button' id='legacy-system-toggle' class='btn btn-secondary legacy-system-toggle' aria-controls='legacy-system-options' aria-expanded='" + f.showSystemGroups + "'>Show system groups</button>" +
+    "<div id='legacy-system-options' class='" + (f.showSystemGroups ? "" : "hidden") + "'>" + (choices(sections.system) || "<p>No matching system groups.</p>") + "</div>";
+  updateLegacySystemGroups();
   updateLegacyGroupSummary();
 }
 function renderLegacyChoices() {
@@ -277,7 +329,9 @@ function applyLegacyFilters() {
     trips = trips.concat(selectedTrips);
   });
   state.reportData = trips; state.legacyByDevice = byDevice;
-  updateLegacyReportSummary(trips);
+  // Legacy has no on-screen KPI tiles. Table and PDF totals remain unchanged.
+  document.getElementById("report-summary").innerHTML = "";
+  document.getElementById("report-summary").classList.add("hidden");
   renderLegacyTripHistoryOutput(byDevice, state.legacyAddrMap || {});
   ["export-csv", "export-pdf-legacy"].forEach(function (id) { document.getElementById(id).classList.toggle("hidden", !trips.length); });
 }

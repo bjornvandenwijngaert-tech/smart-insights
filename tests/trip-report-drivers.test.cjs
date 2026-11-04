@@ -69,13 +69,15 @@ function testClock() {
 
 function loadApp(variant, data = fixture(), denyDrivers = false) {
   const clock = testClock();
-  const elements = {}, calls = [], downloads = [], filenames = [], pdfs = [], workbooks = [];
+  const elements = {}, calls = [], downloads = [], filenames = [], pdfs = [], workbooks = [], listenerRegistrations = [], documentListeners = {};
   function element(id) {
-    if (!elements[id]) elements[id] = { value: "", innerHTML: "", checked: false, children: [], style: {}, listeners: {},
+    if (!elements[id]) elements[id] = { id, value: "", innerHTML: "", checked: false, children: [], style: {}, listeners: {},
       classList: { values: new Set(), add(value) { this.values.add(value); }, remove(value) { this.values.delete(value); },
         toggle(value, force) { const add = force === undefined ? !this.values.has(value) : force; add ? this.values.add(value) : this.values.delete(value); }, contains(value) { return this.values.has(value); } },
       attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, getAttribute(name) { return this.attributes[name]; },
-      addEventListener(name, handler) { this.listeners[name] = handler; }, appendChild(child) { this.children.push(child); } };
+      contains(target) { for (let current = target; current; current = current.parentNode) if (current === this) return true; return false; },
+      focus() { context.document.activeElement = this; }, querySelector(selector) { return selector === "summary" ? element(id === "legacy-group-picker" ? "legacy-group-summary" : "legacy-entity-summary") : null; },
+      addEventListener(name, handler) { listenerRegistrations.push({ id, name, handler }); this.listeners[name] = handler; }, appendChild(child) { child.parentNode = this; this.children.push(child); } };
     return elements[id];
   }
   element("filter-from").value = "2026-10-07"; element("filter-to").value = "2026-10-13";
@@ -136,7 +138,10 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
     localStorage: { getItem() { return null; }, setItem() {} },
     URL: { createObjectURL(blob) { downloads.push(blob); return "blob:test"; }, revokeObjectURL() {} },
     alert(message) { throw new Error(message); },
-    document: { getElementById: element, createElement(tag) {
+    document: { getElementById: element, addEventListener(name, handler) {
+      listenerRegistrations.push({ id: "document", name, handler });
+      (documentListeners[name] || (documentListeners[name] = [])).push(handler);
+    }, createElement(tag) {
       return tag === "canvas" ? { getContext() { return {}; }, toDataURL() { return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="; } }
         : { click() { if (this.download) filenames.push(this.download); } };
     } }, jspdf: { jsPDF: FakePdf }, ExcelJS: { Workbook: FakeWorkbook }, Chart: function () { this.destroy = function () {}; }
@@ -160,7 +165,7 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
     else throw new Error("Unexpected API operation: " + method + " " + JSON.stringify(params));
   } };
   hooks.state.server = "my.geotab.com"; hooks.state.dbName = "demo"; hooks.state.unitSystem = "Metric";
-  return { hooks, elements, calls, downloads, filenames, pdfs, workbooks, data, context, clock };
+  return { hooks, elements, calls, downloads, filenames, pdfs, workbooks, data, context, clock, listenerRegistrations, documentListeners };
 }
 
 function runReport(app, variant, from = "2026-10-07", to = "2026-10-13") {
@@ -237,7 +242,8 @@ for (const variant of variants.filter(v => v.legacy)) {
       assert.deepEqual(rows[0], ["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Trip History"]);
       assert.equal(rows[2][1], distance + " " + unit); assert.equal(rows[2][2], "1h 00m 00s");
       assert.equal(rows[3][1], distance + " " + unit); assert.equal(rows[3][2], "1h 00m 00s");
-      assert(app.elements["report-summary"].innerHTML.includes((metric ? "50" : "31") + "<span class='summary-unit'>" + unit));
+      assert.equal(app.elements["report-summary"].innerHTML, "", "Legacy summary tiles were intentionally removed");
+      assert.equal(app.hooks.legacyTotals(app.hooks.state.reportData).distance, 50);
       app.hooks.exportReportCsv(); const csv = parseCsv(app.downloads.at(-1));
       assert.equal(csv.length, 2); assert.equal(csv[0][4], "Distance (" + unit + ")"); assert.equal(csv[1][4], distance);
       app.hooks.exportLegacyTripHistoryPdf(); const pdf = app.pdfs[0], table = pdf.tables[0];
@@ -388,17 +394,17 @@ for (const variant of variants.filter(v => v.legacy)) {
     assert(tables.some(t => t.head[0][0].content.includes("Jamie Sample | 13-10-2026")));
     assert(tables.some(t => t.head[0][0].content.includes("Alex Example | 12-10-2026")));
   });
-  test(variant.label + ": vehicle filter updates rows, exports and cards", () => {
+  test(variant.label + ": vehicle filter updates rows, exports and totals without summary tiles", () => {
     const app = loadApp(variant); runReport(app, variant);
     const summary = app.elements["report-summary"].innerHTML, output = app.elements["report-output"].innerHTML;
     app.hooks.filterReportByVehicle("bOther");
-    assert.notEqual(app.elements["report-summary"].innerHTML, summary);
-    assert(app.elements["report-summary"].innerHTML.includes("Number of Stops</div><div class='summary-value'>1<"));
+    assert.equal(app.elements["report-summary"].innerHTML, "");
+    assert.equal(app.hooks.legacyTotals(app.hooks.state.reportData).stops, 1);
     assert(!app.elements["report-output"].innerHTML.includes("Vehicle One - TEST01"));
     app.hooks.exportReportCsv(); assert.equal(parseCsv(app.downloads.at(-1)).length, 2);
     app.hooks.filterReportByVehicle("");
     assert.equal(app.elements["report-output"].innerHTML, output); assert.equal(app.elements["report-summary"].innerHTML, summary);
-    assert(summary.includes("Number of Stops</div><div class='summary-value'>4<"));
+    assert.equal(app.hooks.legacyTotals(app.hooks.state.reportData).stops, 4);
   });
   test(variant.label + ": unavailable names stay distinct from unassigned trips", () => {
     const app = loadApp(variant, fixture(), true); runReport(app, variant);
@@ -1070,6 +1076,106 @@ test("parent: pending non-Legacy report cannot overwrite Legacy after a report-t
   assert.equal(app.elements["run-report"].disabled, false);
   const snapshot = app.hooks.state.legacyByDevice, html = app.elements["report-output"].innerHTML;
   late([]); assert.equal(app.hooks.state.legacyByDevice, snapshot); assert.equal(app.elements["report-output"].innerHTML, html);
+});
+
+for (const variant of variants.filter(v => v.legacy)) {
+  function groupedFixture() {
+    const data = fixture();
+    data.groups[0].children.push({ id: "GroupAssetTypeId" }, { id: "GroupAssetPurposeId" }, { id: "bCustomType" });
+    data.groups.push({ id: "GroupAssetTypeId", name: "Tipo de activo", children: [{ id: "GroupVehicleId" }, { id: "bSystemChild" }] },
+      { id: "GroupVehicleId", name: "Vehicle", children: [] }, { id: "GroupAssetPurposeId", name: "Asset Purpose", children: [] },
+      { id: "bSystemChild", name: "Customer extension of asset type", children: [] }, { id: "bCustomType", name: "Asset Purpose", children: [] });
+    return data;
+  }
+  function setup(data = groupedFixture()) { const app = loadApp(variant, data); app.hooks.setupLegacyFilters(); return app; }
+  test(variant.label + ": customer groups lead, built-in branches are collapsed and names do not classify groups", () => {
+    const app = setup();
+    const sections = app.hooks.legacyGroupSections();
+    assert(sections.custom.some(group => group.id === "bCustomType"), "A customer-created namesake remains a customer group");
+    for (const id of ["GroupCompanyId", "GroupAssetTypeId", "GroupAssetPurposeId", "GroupVehicleId", "bSystemChild"]) {
+      assert(sections.system.some(group => group.id === id), id + " remains available in the system section");
+      assert(!sections.custom.some(group => group.id === id));
+    }
+    const html = app.elements["legacy-group-options"].innerHTML;
+    const top = html.slice(0, html.indexOf("id='legacy-system-toggle'"));
+    assert(top.includes("data-group='gParent'")); assert(!top.includes("data-group='GroupAssetTypeId'"));
+    assert(html.includes("aria-expanded='false'")); assert(html.includes("id='legacy-system-options' class='hidden'"));
+    app.elements["legacy-group-search"].value = "Tipo"; app.hooks.renderLegacyGroups();
+    assert(app.elements["legacy-group-options"].innerHTML.includes("No matching customer groups."));
+    assert.equal(app.elements["legacy-system-toggle"].textContent, "Show system groups (1 match)");
+    assert.equal(app.elements["legacy-system-toggle"].attributes["aria-expanded"], "false");
+  });
+  test(variant.label + ": system leaf classification also works with a restricted partial group tree", () => {
+    const data = groupedFixture();
+    data.groups = data.groups.filter(group => group.id === "GroupVehicleId" || group.id === "gChild");
+    data.devices[0].groups.push({ id: "GroupVehicleId" });
+    const app = setup(data), sections = app.hooks.legacyGroupSections();
+    assert.deepEqual(Array.from(sections.system, group => group.id), ["GroupVehicleId"]);
+    assert.deepEqual(Array.from(sections.custom, group => group.id), ["gChild"]);
+  });
+  test(variant.label + ": expanding/collapsing system choices preserves filters and Company is not All groups", () => {
+    const app = setup(), f = app.hooks.legacyFilters();
+    const toggle = app.context.document.getElementById("legacy-system-toggle");
+    const options = app.elements["legacy-group-options"];
+    options.listeners.click({ target: toggle });
+    assert.equal(toggle.attributes["aria-expanded"], "true");
+    f.groups = ["GroupCompanyId"]; runReport(app, variant);
+    assert.equal(app.hooks.state.reportData.length, 6, "Company's descendant asset groups are unchanged");
+    f.mode = "drivers"; app.hooks.applyLegacyFilters();
+    assert.equal(app.hooks.state.reportData.length, 5, "Company excludes unassigned drivers");
+    options.listeners.click({ target: toggle });
+    assert.equal(toggle.attributes["aria-expanded"], "false");
+    assert.equal(f.groups[0], "GroupCompanyId");
+    f.groups = []; app.hooks.applyLegacyFilters(); assert.equal(app.hooks.state.reportData.length, 6, "All groups remains unrestricted");
+  });
+  test(variant.label + ": outside clicks close pickers without suppressing inside label/checkbox clicks", () => {
+    const app = setup(), group = app.elements["legacy-group-picker"], entity = app.elements["legacy-entity-picker"];
+    const groupOptions = app.elements["legacy-group-options"]; groupOptions.parentNode = group;
+    const label = app.context.document.getElementById("test-group-label"); label.parentNode = groupOptions;
+    const checkbox = app.context.document.getElementById("test-group-checkbox"); checkbox.parentNode = label;
+    checkbox.attributes["data-group"] = "gParent"; checkbox.checked = true;
+    const click = target => (app.documentListeners.click || []).forEach(handler => handler({ target }));
+    group.open = true; entity.open = true; click(label);
+    assert.equal(group.open, true); assert.equal(entity.open, false);
+    groupOptions.listeners.change({ target: checkbox }); click(checkbox);
+    assert.equal(group.open, true); assert.equal(app.hooks.legacyFilters().groups[0], "gParent");
+    const summary = app.elements["legacy-entity-summary"]; summary.parentNode = entity;
+    entity.open = true; click(summary); assert.equal(group.open, false); assert.equal(entity.open, true);
+    click(app.context.document.getElementById("run-report")); assert.equal(entity.open, false);
+    assert.equal(app.hooks.legacyFilters().groups[0], "gParent");
+    entity.open = true; entity.listeners.keydown.call(entity, { key: "Escape" });
+    assert.equal(entity.open, false); assert.equal(app.context.document.activeElement, summary);
+    app.hooks.setupLegacyFilters(); app.hooks.resetLegacyPage(); app.hooks.setupLegacyFilters();
+    assert.equal(app.listenerRegistrations.filter(registration => registration.id === "document" && registration.name === "click").length, 1);
+  });
+  test(variant.label + ": closed-picker catalog errors remain visible and announced without creating a toolbar row", () => {
+    const app = loadApp(variant, groupedFixture()), original = app.hooks.state.api.call;
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "Group" ? failure(new Error("Groups denied")) : original(method, params, success, failure);
+    app.hooks.setupLegacyFilters();
+    assert.match(app.context.document.getElementById("legacy-group-summary").textContent || "", /unavailable/i);
+    assert.match(app.elements["legacy-filter-status"].textContent, /unavailable/i);
+    const html = app.elements["legacy-filters"].innerHTML;
+    assert(html.indexOf("id='legacy-filter-status'") > html.lastIndexOf("</details>"), "Live status is outside the collapsed panels");
+    assert(html.includes("id='legacy-filter-status' class='legacy-sr-only'"));
+    app.hooks.state.api.call = original; app.elements["legacy-filter-retry"].listeners.click();
+    assert.equal(app.elements["legacy-group-summary"].textContent, "All groups");
+  });
+  test(variant.label + ": Legacy summary tiles are removed while table and PDF totals remain", () => {
+    const app = setup(); runReport(app, variant);
+    assert.equal(app.elements["report-summary"].innerHTML, ""); assert(app.elements["report-summary"].classList.contains("hidden"));
+    assert(app.elements["report-output"].innerHTML.includes("Vehicle Total"));
+    assert.equal(app.hooks.legacyTotals(app.hooks.state.reportData).distance, 110);
+    app.hooks.exportLegacyTripHistoryPdf(); assert(app.pdfs[0].texts.includes("Total Distance Travelled (km)"));
+  });
+}
+
+test("parent: other report summary tiles are unaffected by Legacy-only removal", () => {
+  const app = loadApp(variants[1]); app.elements["report-type"].value = "trips";
+  app.hooks.runTripsReport("2026-10-07", "2026-10-13", () => {});
+  assert(app.elements["report-summary"].innerHTML.includes("summary-card"));
+  assert(!app.elements["report-summary"].classList.contains("hidden"));
+  app.elements["report-type"].value = "legacy-trip-history";
+  runReport(app, variants[1]); assert.equal(app.elements["report-summary"].innerHTML, "");
 });
 
 test("release manifests, badges and local asset cache versions agree", () => {

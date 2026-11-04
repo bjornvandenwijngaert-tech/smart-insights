@@ -651,22 +651,6 @@ function populateReportVehicleFilter(data, deviceMap) {
   }
 }
 
-function updateLegacyReportSummary(trips) {
-  var distance = trips.reduce(function (s, t) { return s + (t.distance || 0); }, 0);
-  var driving = trips.reduce(function (s, t) { var d = parseDurationToMins(t.drivingDuration); return s + (d != null ? d : durationMins(t.start, t.stop)); }, 0);
-  var idle = trips.reduce(function (s, t) { return s + (parseDurationToMins(t.idlingDuration) || 0); }, 0);
-  var counted = trips.filter(function (t) { return legacyStopMins(t) != null; });
-  var stopped = counted.reduce(function (s, t) { return s + legacyStopMins(t); }, 0);
-  showReportSummary([
-    summaryCard("Total Distance", distVal(distance).toFixed(0), distUnit()),
-    summaryCard("Total Stop Duration", fmtDurWhole(stopped), ""),
-    summaryCard("Total Idle Time", fmtDurWhole(idle), ""),
-    summaryCard("Total Travel Duration", fmtDurWhole(driving), ""),
-    summaryCard("Average Stop Duration", fmtDurWhole(counted.length ? stopped / counted.length : 0), ""),
-    summaryCard("Number of Stops", counted.length, "")
-  ]);
-}
-
 function filterReportByVehicle(vid) {
   var f = legacyFilters();
   f.mode = "assets"; f.assets = { all: !vid, ids: {} };
