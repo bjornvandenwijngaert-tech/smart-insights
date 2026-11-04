@@ -20,6 +20,7 @@ function clearLegacyResults() {
   state.legacyFullByDevice = null;
   state.legacyByDevice = null;
   state.legacyAddrMap = null;
+  state.legacyStartLocations = null;
   state.legacyStopInfo = null;
   state.legacyReportRange = null;
   ["export-csv", "export-pdf-legacy"].forEach(function (id) { document.getElementById(id).classList.add("hidden"); });
@@ -335,13 +336,69 @@ function applyLegacyFilters() {
   renderLegacyTripHistoryOutput(byDevice, state.legacyAddrMap || {});
   ["export-csv", "export-pdf-legacy"].forEach(function (id) { document.getElementById(id).classList.toggle("hidden", !trips.length); });
 }
+function legacyCoordinate(point) {
+  return point && Number.isFinite(point.x) && Number.isFinite(point.y)
+    && Math.abs(point.x) <= 180 && Math.abs(point.y) <= 90 ? { x: point.x, y: point.y } : null;
+}
+function legacyStartKey(trip) {
+  var instant = Date.parse(trip.start), id = trip.device && trip.device.id;
+  return id && Number.isFinite(instant) ? id + "|" + instant : "";
+}
+function legacyPreviousPoint(trip, previous) {
+  return previous && Date.parse(previous.stop) <= Date.parse(trip.start) ? legacyCoordinate(previous.stopPoint) : null;
+}
+function legacyStartingAddress(row, addrMap) {
+  var previous = legacyPreviousPoint(row.trip, row.prevTrip);
+  if (previous) return addressForPoint(previous, addrMap);
+  var start = state.legacyStartLocations && state.legacyStartLocations[legacyStartKey(row.trip)];
+  if (!start) return "(location unknown)";
+  if (!start.point) return start.status === "gps-error" ? "(location lookup failed)" : "(location unknown)";
+  return (start.addressError ? "(address lookup failed) " : "") + addressForPoint(start.point, addrMap);
+}
+// Trip only supplies a stopPoint. The first fetched departure has no predecessor,
+// so resolve its GPS at the actual start instant rather than reusing its arrival.
+function resolveLegacyStartLocations(trips, call, done) {
+  var byDevice = {}, starts = {}, jobs = [];
+  trips.forEach(function (trip) {
+    var id = trip.device && trip.device.id;
+    if (id) (byDevice[id] || (byDevice[id] = [])).push(trip);
+  });
+  Object.keys(byDevice).forEach(function (id) {
+    var timeline = byDevice[id].sort(function (a, b) { return Date.parse(a.start) - Date.parse(b.start); });
+    timeline.forEach(function (trip, index) {
+      var key = legacyStartKey(trip);
+      if (!key || starts[key] || legacyPreviousPoint(trip, timeline[index - 1])) return;
+      starts[key] = { point: null, status: "missing", addressError: false };
+      jobs.push({ key: key, id: id, instant: Date.parse(trip.start) });
+    });
+  });
+  var index = 0;
+  function next() {
+    if (index >= jobs.length) { done(starts); return; }
+    var job = jobs[index++], entry = starts[job.key];
+    // LogRecordSearch interpolates boundaries. No nearby/stale GPS guessing.
+    call("Get", { typeName: "LogRecord", search: { deviceSearch: { id: job.id },
+      fromDate: new Date(job.instant).toISOString(), toDate: new Date(job.instant + 1).toISOString()
+    }, resultsLimit: 3 }, function (records) {
+      if (!Array.isArray(records)) { entry.status = "gps-error"; next(); return; }
+      records.some(function (record) {
+        if (!record || Date.parse(record.dateTime) !== job.instant || (record.device && record.device.id !== job.id)) return false;
+        entry.point = legacyCoordinate({ x: record.longitude, y: record.latitude });
+        return !!entry.point; // interpolated results may have no id
+      });
+      if (entry.point) entry.status = "coordinate";
+      next();
+    }, function () { entry.status = "gps-error"; next(); }, 100);
+  }
+  next();
+}
 function runLegacyTripHistoryReport(from, to, done) {
   cancelLegacyReport(); clearLegacyResults();
   state.reportRaw = []; state.reportData = []; state.legacyLoading = true;
   document.getElementById("run-report").disabled = true;
   document.getElementById("run-report").textContent = "Loading...";
   var epoch = state.reportEpoch;
-  var finished = false;
+  var finished = false, nextLocationRequestAt = 0;
   function current() { return !finished && epoch === state.reportEpoch && legacyIsActive(); }
   function complete() {
     finished = true; state.legacyLoading = false;
@@ -350,8 +407,13 @@ function runLegacyTripHistoryReport(from, to, done) {
     done();
   }
   function fail(err) { if (current()) { reportError(err); complete(); } }
-  function call(method, params, success, failure) {
+  function call(method, params, success, failure, interval) {
     if (!current()) return;
+    if (interval) {
+      var delay = nextLocationRequestAt - Date.now();
+      if (delay > 0) { setTimeout(function () { call(method, params, success, failure, interval); }, delay); return; }
+      nextLocationRequestAt = Date.now() + interval;
+    }
     var settled = false;
     var timer = setTimeout(function () { settle(new Error("Report lookup timed out.")); }, 20000);
     function settle(err, value) {
@@ -361,7 +423,7 @@ function runLegacyTripHistoryReport(from, to, done) {
       if (err) (failure || fail)(err); else success(value);
     }
     try { apiCall(method, params, function (value) { settle(null, value); }, function (err) { settle(err); }); }
-    catch (err) { settle(err); }
+    catch (err) { if (settled) throw err; settle(err); }
   }
   var fromDate = new Date(from + "T00:00:00").toISOString();
   var toDate = new Date(to + "T23:59:59").toISOString();
@@ -388,8 +450,15 @@ function runLegacyTripHistoryReport(from, to, done) {
         }
         // Assembly is local to this run. No global driver/stop map is mutated
         // until the guarded final callback publishes the completed snapshot.
+        document.getElementById("report-output").innerHTML = "<p class='placeholder'>Resolving departure locations...</p>";
+        resolveLegacyStartLocations(trips, call, function (starts) {
+        if (!current()) return;
         var points = {}, addrMap = {}, keys, position = 0;
         trips.forEach(function (trip) { if (trip.stopPoint && trip.stopPoint.x != null && trip.stopPoint.y != null) points[coordKey(trip.stopPoint)] = trip.stopPoint; });
+        Object.keys(starts).forEach(function (key) {
+          var point = starts[key].point;
+          if (point && !points[coordKey(point)]) points[coordKey(point)] = point;
+        });
         keys = Object.keys(points);
         document.getElementById("report-output").innerHTML = "<p class='placeholder'>Resolving stop addresses...</p>";
         function nextAddresses() {
@@ -398,9 +467,17 @@ function runLegacyTripHistoryReport(from, to, done) {
             var chunk = keys.slice(position, position + 400); position += chunk.length;
             call("GetAddresses", { coordinates: chunk.map(function (key) { return points[key]; }) }, function (addresses) {
               if (!current()) return;
-              (addresses || []).forEach(function (address, i) { if (chunk[i]) addrMap[chunk[i]] = formatReverseGeocodeAddress(address); });
+              if (!Array.isArray(addresses)) { addressFailure(); return; }
+              addresses.forEach(function (address, i) { if (chunk[i]) addrMap[chunk[i]] = formatReverseGeocodeAddress(address); });
               nextAddresses();
-            }, nextAddresses);
+            }, addressFailure, 150);
+            function addressFailure() {
+              Object.keys(starts).forEach(function (key) {
+                var entry = starts[key];
+                if (entry.point && chunk.indexOf(coordKey(entry.point)) !== -1) entry.addressError = true;
+              });
+              nextAddresses();
+            }
             return;
           }
           state.reportDriverMap = {};
@@ -412,11 +489,13 @@ function runLegacyTripHistoryReport(from, to, done) {
           });
           state.deviceMap = deviceMap; state.reportRaw = trips;
           state.legacyFullByDevice = buildLegacyByDevice(trips, deviceMap);
+          state.legacyStartLocations = starts;
           state.legacyAddrMap = addrMap; state.legacyReportRange = { from: from, to: to };
           state.legacyLoading = false;
           renderLegacyChoices(); applyLegacyFilters(); complete();
         }
         nextAddresses();
+        });
       }
       nextDrivers();
     }, fail);

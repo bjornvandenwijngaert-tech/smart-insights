@@ -1178,6 +1178,130 @@ test("parent: other report summary tiles are unaffected by Legacy-only removal",
   runReport(app, variants[1]); assert.equal(app.elements["report-summary"].innerHTML, "");
 });
 
+// Sanitized shape of the live LogRecord responses inspected in the add-in:
+// dateTime, device, id, latitude, longitude, speed. Values below are synthetic.
+function legacyDepartureFixture(trip, longitude = -1.25, latitude = 51.5) {
+  return { dateTime: trip.start, device: { id: trip.device.id }, id: "gps-example", latitude, longitude, speed: 0 };
+}
+for (const variant of variants.filter(v => v.legacy)) {
+  test(variant.label + ": missing first departures resolve from exact GPS into preview and PDF", () => {
+    const data = fixture();
+    data.logRecords = [legacyDepartureFixture(data.trips[0]), legacyDepartureFixture(data.trips[5], -2.25)];
+    const original = JSON.stringify(data.trips), app = loadApp(variant, data);
+    runReport(app, variant);
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: Stop -1.25"));
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: Stop -2.25"));
+    assert(!app.elements["report-output"].innerHTML.includes("Starting from: (location unknown)"));
+    const calls = app.calls.filter(call => call.params.typeName === "LogRecord");
+    assert.equal(calls.length, 2, "Only the first trip of each complete vehicle timeline needs GPS");
+    assert.equal(calls[0].params.search.deviceSearch.id, "bVan");
+    assert.equal(calls[0].params.search.fromDate, new Date(data.trips[0].start).toISOString());
+    assert.equal(Date.parse(calls[0].params.search.toDate) - Date.parse(calls[0].params.search.fromDate), 1);
+    assert.equal(calls[0].params.resultsLimit, 3);
+    assert(calls[1].at - calls[0].at >= 100, "GPS requests are paced");
+    const addressCalls = app.calls.filter(call => call.method === "GetAddresses");
+    assert.equal(addressCalls.length, 1, "Recovered starts share the existing address batch");
+    assert.equal(addressCalls[0].params.coordinates.length, 8);
+    assert.equal(JSON.stringify(data.trips), original, "Never modify Trip stopPoint or invent a previous trip");
+    assert.equal(app.hooks.state.legacyByDevice.bVan.driverGroups[0].days[0].rows[0].prevTrip, null);
+    assert.equal(app.hooks.legacyTotals(app.hooks.state.reportData).distance, 110);
+    app.hooks.exportLegacyTripHistoryPdf();
+    assert(app.pdfs[0].tables.some(table => table.body[0][0].content.includes("Starting from: Stop -1.25")));
+    assert(app.pdfs[0].tables.some(table => table.body[0][0].content.includes("Starting from: Stop -2.25")));
+    app.hooks.exportReportCsv(); const csv = parseCsv(app.downloads[0]);
+    assert.equal(csv[0].length, 10); assert(csv.slice(1).every(row => !row.includes("Stop -1.25") && !row.includes("Stop -2.25")));
+    app.hooks.filterReportByVehicle("bOther");
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: Stop -2.25"));
+    runReport(app, variant); assert(app.elements["report-output"].innerHTML.includes("Starting from: Stop -2.25"));
+  });
+  test(variant.label + ": departure GPS rejects stale/wrong-asset/invalid data and accepts exact interpolated records", () => {
+    const data = fixture(); data.trips = [data.trips[0], { ...data.trips[5], start: data.trips[0].start }];
+    const first = data.trips[0], second = data.trips[1];
+    data.logRecords = [
+      { ...legacyDepartureFixture(first), device: { id: "wrong" } },
+      { ...legacyDepartureFixture(first), dateTime: "2026-10-12T06:59:59Z" },
+      legacyDepartureFixture(first, 181), legacyDepartureFixture(first, -1, 91), legacyDepartureFixture(first, "1"),
+      { ...legacyDepartureFixture(second, -2.25), id: undefined }
+    ];
+    const app = loadApp(variant, data); runReport(app, variant);
+    assert.equal(app.hooks.legacyStartingAddress({ trip: first, prevTrip: null }, app.hooks.state.legacyAddrMap), "(location unknown)");
+    assert.equal(app.hooks.legacyStartingAddress({ trip: second, prevTrip: null }, app.hooks.state.legacyAddrMap), "Stop -2.25");
+    assert.equal(app.calls.filter(call => call.params.typeName === "LogRecord").length, 2, "Same instant on different assets stays separate");
+  });
+  test(variant.label + ": departure lookup failures are distinct and cannot discard resolved stops", () => {
+    const app = loadApp(variant), original = app.hooks.state.api.call;
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "LogRecord" ? failure(new Error("GPS unavailable")) : original(method, params, success, failure);
+    runReport(app, variant);
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: (location lookup failed)"));
+    assert(app.elements["report-output"].innerHTML.includes("Stop 1"));
+    assert.equal(app.hooks.state.reportData.length, 6);
+    app.hooks.state.api.call = original; runReport(app, variant);
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: (location unknown)"));
+    assert(!app.elements["report-output"].innerHTML.includes("location lookup failed"), "Rerun clears stale start state");
+  });
+  test(variant.label + ": recovered start coordinates deduplicate without replacing original stop coordinates", () => {
+    const data = fixture(); data.trips = [data.trips[0]];
+    data.logRecords = [legacyDepartureFixture(data.trips[0], data.trips[0].stopPoint.x + 0.000001, data.trips[0].stopPoint.y)];
+    const app = loadApp(variant, data); runReport(app, variant);
+    const coordinates = app.calls.find(call => call.method === "GetAddresses").params.coordinates;
+    assert.deepEqual(coordinates, [data.trips[0].stopPoint]);
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: Stop 1"));
+  });
+  test(variant.label + ": departure geocoding failure labels coordinates without fabricating an address", () => {
+    const data = fixture(); data.trips = [data.trips[0]]; data.logRecords = [legacyDepartureFixture(data.trips[0])];
+    const app = loadApp(variant, data), original = app.hooks.state.api.call;
+    app.hooks.state.api.call = (method, params, success, failure) => method === "GetAddresses" ? failure(new Error("geocoder unavailable")) : original(method, params, success, failure);
+    runReport(app, variant);
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: (address lookup failed) 51.50000, -1.25000"));
+    assert(app.elements["report-output"].innerHTML.includes("50.00000, 1.00000"), "Stop coordinate fallback is preserved");
+  });
+  test(variant.label + ": missing or overlapping predecessors use GPS while driver handovers retain their valid predecessor", () => {
+    const data = fixture(); data.trips = data.trips.slice(0, 2); data.trips[0].stopPoint = null;
+    data.logRecords = [legacyDepartureFixture(data.trips[0]), legacyDepartureFixture(data.trips[1], -2.25)];
+    const app = loadApp(variant, data); runReport(app, variant);
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: Stop -2.25"));
+    data.trips[0].stopPoint = { x: 1, y: 50 }; runReport(app, variant);
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: Stop 1"));
+    data.trips[0].stop = "2026-10-12T10:00:00Z"; runReport(app, variant);
+    assert(app.elements["report-output"].innerHTML.includes("Starting from: Stop -2.25"), "A future stop cannot be used as the departure");
+  });
+  for (const fault of ["timeout", "throw", "duplicate", "malformed"]) {
+    test(variant.label + ": departure " + fault + " settles once and lets the other asset resolve", () => {
+      const data = fixture(); data.logRecords = [legacyDepartureFixture(data.trips[5], -2.25)];
+      const app = loadApp(variant, data), original = app.hooks.state.api.call;
+      let late;
+      app.hooks.state.api.call = (method, params, success, failure) => {
+        if (params.typeName === "LogRecord" && params.search.deviceSearch.id === "bVan") {
+          late = success;
+          if (fault === "throw") throw new Error("SDK failure");
+          if (fault === "malformed") success({ invalid: true });
+          if (fault === "duplicate") { success([legacyDepartureFixture(data.trips[0])]); success([]); failure(new Error("late")); }
+        } else original(method, params, success, failure);
+      };
+      runReport(app, variant);
+      assert(app.elements["report-output"].innerHTML.includes("Starting from: Stop -2.25"));
+      assert(app.elements["report-output"].innerHTML.includes(fault === "duplicate" ? "Starting from: Stop -1.25" : "Starting from: (location lookup failed)"));
+      const html = app.elements["report-output"].innerHTML;
+      late([legacyDepartureFixture(data.trips[0], -99)]); assert.equal(app.elements["report-output"].innerHTML, html);
+    });
+  }
+  for (const stage of ["active", "queued"]) {
+    test(variant.label + ": cancel during " + stage + " departure lookup prevents stale dispatch/publication", () => {
+      const app = loadApp(variant), original = app.hooks.state.api.call;
+      let late, gpsCount = 0, finished = 0;
+      app.hooks.state.api.call = (method, params, success, failure) => {
+        if (params.typeName === "LogRecord") { gpsCount++; late = success; if (stage === "queued") success([]); }
+        else original(method, params, success, failure);
+      };
+      app.hooks.runLegacyTripHistoryReport("2026-10-07", "2026-10-13", () => finished++);
+      assert.equal(gpsCount, 1); app.hooks.cancelLegacyReport();
+      late([legacyDepartureFixture(app.data.trips[0])]); app.clock.flush();
+      assert.equal(gpsCount, 1); assert.equal(finished, 0); assert.equal(app.hooks.state.legacyStartLocations, null);
+      assert.equal(app.hooks.state.legacyByDevice, null);
+    });
+  }
+}
+
 test("release manifests, badges and local asset cache versions agree", () => {
   for (const folder of ["", "legacy-trip-report", "activity-report"]) {
     const directory = path.join(root, folder), manifest = JSON.parse(fs.readFileSync(path.join(directory, "config.json"), "utf8")), html = fs.readFileSync(path.join(directory, "index.html"), "utf8");

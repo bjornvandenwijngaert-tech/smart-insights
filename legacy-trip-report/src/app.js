@@ -606,7 +606,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
 
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
-      var startingFromHtml = "<tr><td colspan='8' style='font-weight:600;background:var(--surface-2)'>" + fmtLegacyDate(block.date) + " \u2014 Starting from: " + esc(addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap)) + "</td></tr>";
+      var startingFromHtml = "<tr><td colspan='8' style='font-weight:600;background:var(--surface-2)'>" + fmtLegacyDate(block.date) + " \u2014 Starting from: " + esc(legacyStartingAddress(block.rows[0], addrMap)) + "</td></tr>";
       // "(Ignition On)" marks the day's first drive. We deliberately do NOT show a
       // duration here: the gap to the previous trip is overnight/parked time, not
       // idle, and Trip data has no pre-drive idle figure to show instead.
@@ -791,7 +791,7 @@ function exportLegacyTripHistoryPdf() {
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
 
-      body.push([{ content: fmtLegacyDate(block.date) + "  Starting from: " + addressForPoint(prevTrip ? prevTrip.stopPoint : null, addrMap), colSpan: 8, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
+      body.push([{ content: fmtLegacyDate(block.date) + "  Starting from: " + legacyStartingAddress(block.rows[0], addrMap), colSpan: 8, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
 
       if (prevTrip) {
         // No duration on this row — the gap to the previous trip is overnight/

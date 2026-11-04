@@ -35,9 +35,17 @@ smart-insights/
 
 ---
 
-## Current version: v2.13.1
+## Current version: v2.13.2
 
 ### Changelog since v2.2.0
+- **v2.13.2** — Legacy resolves missing first-departure locations through a
+  device/time-scoped `LogRecord` boundary lookup, then the existing `GetAddresses`
+  batch. Preview and PDF Starting from rows share the completed start snapshot.
+  Full-timeline predecessors, table totals, stop-only CSV and Activity are
+  unchanged. Missing GPS and failed lookups have distinct labels. Live diagnosis
+  confirmed both affected departures have GPS and resolvable addresses; tests
+  cover exact identity/time, failures, pacing and stale callbacks. Standalone
+  Legacy v1.5.2; user requested GitHub publication for live verification.
 - **v2.13.1** — Legacy group choices show customer groups first, with SDK-known
   system branches behind an accessible Show/Hide system groups control. Company
   remains selectable and distinct from All groups. Dropdowns close on outside

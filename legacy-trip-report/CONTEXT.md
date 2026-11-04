@@ -69,7 +69,49 @@ uses driver home `driverGroups` (not `companyGroups`, `reportGroups` or security
 groups). Unknown drivers have no group membership, so appear only under All
 groups. Driver trips can span multiple assets, independent of asset group.
 
-## Current version: v1.5.1
+## Current version: v1.5.2
+
+**Why:** Live inspection found 184 resolved stop rows but two unknown Starting
+from rows: each vehicle's first fetched trip had no predecessor. Both departure
+GPS positions and formatted addresses were available through the logged-in API.
+
+**Approach:** When the full vehicle timeline has no valid, non-overlapping
+previous stop location, query `LogRecord` for that device at `Trip.start` using a
+1ms positive boundary window. Accept only exact-time, matching-device finite
+coordinates; interpolate through the API, never guess a nearby location. Send
+recovered departure coordinates through the existing deduplicated address batch.
+
+- Shared helpers in `filters.js` keep one in-memory start snapshot keyed by
+  asset ID and start instant, published alongside completed trips/addresses/range.
+  The same predecessor predicate serves lookup and rendering. HTML/PDF Starting
+  from rows use it; CSV retains its existing stop-only schema. No raw Trip
+  mutation, synthetic predecessor, new trip, totals or link changes.
+- GPS requests are paced at 100ms, geocoding at 150ms. Once-only guards handle
+  errors, timeout, throws and duplicate/late callbacks; cancellation checks also
+  cover queued dispatch. Missing GPS is distinct from a failed lookup. Failed
+  departure geocoding retains labelled coordinates; ordinary stop fallback stays
+  unchanged. New runs/initialization clear the prior start snapshot.
+- Regression: the first-departure test failed on both previous implementations
+  at the missing resolved Starting from assertion before the fix. Current tests
+  include exact/same-time cross-asset identity, interpolation, invalid GPS,
+  handovers, overlap, address deduplication, filtering, rerun, failures and cancel.
+- The user requested implementation and GitHub publication on 2026-11-04.
+  Independent plan r1 PASS (GPT 6 Astra). 183 local regression checks and both
+  real PDF rendering smokes pass. Authenticated browser comparison ran the exact
+  new standalone source and the previous source in detached DOMs against one
+  freshly fetched Trip response: 187 trips, 13 Starting from rows, two unknown
+  departures before and zero after (HTML and actual 12-page PDF). Two GPS reads
+  recovered both departures; stop labels, canonical totals and selections were
+  identical. The previously displayed report had 184 trips, so sharing one fresh
+  response avoided comparing different ongoing-trip snapshots. No real GPS or
+  address data was committed. Final reviewed-head/deployment verification is
+  recorded separately when complete.
+- Independent local code review PASS (GPT 6 Astra), including all 183 tests,
+  both PDF smokes and 16 additional asynchronous/pacing/cancellation probes.
+  Reviewed diff SHA-256: `e2848ba1ba53cc9de7a07b3a7e76569b0f5675fd572007827da004bbb80bd329`
+  before adding this documentation receipt; implementation unchanged.
+
+### v1.5.1
 
 **Why:** System-created groups cluttered the primary list, dropdowns stayed open
 after outside clicks, and the inline hint made the new controls misalign. The
@@ -275,6 +317,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.5.1` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.5.2` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).

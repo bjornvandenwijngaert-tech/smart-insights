@@ -24,6 +24,7 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
   for (const library of ["jspdf.umd.min.js", "jspdf.plugin.autotable.min.js"]) {
     vm.runInContext(fs.readFileSync(path.join(libraries, library), "utf8"), context, { filename: library });
   }
+  vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/filters.js"), "utf8"), context, { filename: "legacy-trip-report/src/filters.js" });
   vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context, { filename: file });
   const RealPdf = context.jspdf.jsPDF;
   let pdf, bytes, filename;
