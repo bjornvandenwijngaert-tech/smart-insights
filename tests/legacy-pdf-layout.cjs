@@ -25,25 +25,39 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
   for (const library of ["jspdf.umd.min.js", "jspdf.plugin.autotable.min.js"]) {
     vm.runInContext(fs.readFileSync(path.join(libraries, library), "utf8"), context, { filename: library });
   }
+  const logoFile = file.startsWith("legacy-trip-report/") ? "legacy-trip-report/src/logo-data.js" : "src/logo-data.js";
+  vm.runInContext(fs.readFileSync(path.join(root, logoFile), "utf8"), context, { filename: logoFile });
   vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/zones.js"), "utf8"), context, { filename: "legacy-trip-report/src/zones.js" });
   vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/filters.js"), "utf8"), context, { filename: "legacy-trip-report/src/filters.js" });
   vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context, { filename: file });
   const RealPdf = context.jspdf.jsPDF;
   let pdf, bytes, filename;
-  const cells = [], links = [], headings = [];
+  const cells = [], links = [], headings = [], rectangles = [], kpiBoxes = [], logos = [], tableLayouts = [];
   context.jspdf.jsPDF = function (options) {
     pdf = new RealPdf(options);
-    const autoTable = pdf.autoTable, link = pdf.link, text = pdf.text;
+    const autoTable = pdf.autoTable, link = pdf.link, text = pdf.text, rect = pdf.rect, roundedRect = pdf.roundedRect, addImage = pdf.addImage;
+    pdf.rect = function (x, y, w, h, style) { rectangles.push({ x, y, w, h, style }); return rect.call(this, x, y, w, h, style); };
+    pdf.roundedRect = function (x, y, w, h, rx, ry, style) {
+      kpiBoxes.push({ x, y, w, h }); return roundedRect.call(this, x, y, w, h, rx, ry, style);
+    };
+    pdf.addImage = function (image, format, x, y, w, h) {
+      const result = addImage.call(this, image, format, x, y, w, h);
+      logos.push({ format, x, y, w, h }); return result;
+    };
     pdf.text = function (value, x, y, options) {
-      headings.push({ lines: Array.isArray(value) ? Array.from(value) : [value], x, y, width: pdf.getTextWidth(Array.isArray(value) ? value.join("") : value) });
+      headings.push({ lines: Array.isArray(value) ? Array.from(value) : [value], x, y,
+        page: pdf.internal.getCurrentPageInfo().pageNumber,
+        width: pdf.getTextWidth(Array.isArray(value) ? value.join("") : value) });
       return text.call(this, value, x, y, options);
     };
     pdf.autoTable = function (tableOptions) {
+      tableLayouts.push({ margin: tableOptions.margin, tableWidth: tableOptions.tableWidth });
       const originalHook = tableOptions.didDrawCell;
       autoTable.call(this, { ...tableOptions, didDrawCell(data) {
         if (originalHook) originalHook(data);
         cells.push({ section: data.section, column: data.column.index, width: data.cell.width,
-          x: data.cell.x, height: data.cell.height, text: Array.from(data.cell.text), raw: data.cell.raw });
+          x: data.cell.x, y: data.cell.y, height: data.cell.height, page: data.pageNumber,
+          text: Array.from(data.cell.text), raw: data.cell.raw });
       } });
     };
     pdf.link = function (x, y, w, h, options) { links.push(options.url); return link.call(this, x, y, w, h, options); };
@@ -72,10 +86,30 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
   context.exportLegacyTripHistoryPdf();
   assert(pdf.internal.pageSize.getWidth() < pdf.internal.pageSize.getHeight(), "Export must be portrait");
   assert(Math.abs(pdf.internal.pageSize.getWidth() - 210) < 0.01, "A4 portrait width");
+  assert.deepEqual(rectangles.slice(0, 2), [
+    { x: 0, y: 0, w: pdf.internal.pageSize.getWidth(), h: 24, style: "F" },
+    { x: 14, y: 32, w: pdf.internal.pageSize.getWidth() - 28, h: 8, style: "F" }
+  ], "Top navy header and black totals bar keep their original positions");
+  assert.equal(logos.length, 1, "Real embedded Geotab logo must be drawn");
+  assert.equal(logos[0].format, "PNG");
+  assert.equal(logos[0].x, pdf.internal.pageSize.getWidth() - 14 - logos[0].w);
+  assert.equal(logos[0].y, (24 - logos[0].h) / 2);
+  assert.equal(kpiBoxes.length, 6, "The existing six KPI boxes stay in the PDF");
+  assert.equal(kpiBoxes[0].x, 14); assert.equal(kpiBoxes[0].y, 46);
+  assert.equal(kpiBoxes[3].x, 14); assert.equal(kpiBoxes[3].y, 66);
+  for (const [prefix, x, y] of [["Legacy Trip History Report", 14, 11], ["Created:", 14, 18], ["Report Totals for:", 17, 37.5]]) {
+    assert(headings.some(heading => heading.page === 1 && heading.lines[0].startsWith(prefix) && heading.x === x && heading.y === y), prefix + " remains in the original header position");
+  }
+  for (let page = 1; page <= pdf.internal.getNumberOfPages(); page++) {
+    assert(headings.some(heading => heading.page === page && heading.lines[0] === "Confidential" && heading.x === 14 && heading.y === pdf.internal.pageSize.getHeight() - 8), "Left footer unchanged on page " + page);
+    assert(headings.some(heading => heading.page === page && /^Page \d+ of \d+$/.test(heading.lines[0]) && heading.x === pdf.internal.pageSize.getWidth() - 14 && heading.y === pdf.internal.pageSize.getHeight() - 8), "Right footer unchanged on page " + page);
+  }
+  assert(tableLayouts.length > 0);
+  assert(tableLayouts.every(layout => layout.margin.left === 5 && layout.margin.right === 5 && layout.margin.top === undefined && layout.margin.bottom === undefined && Math.abs(layout.tableWidth - 200) < 0.01), "Only the table side margins change to 5 mm");
   const assetHeading = headings.find(heading => heading.lines.join(" ") === assetName);
   assert(assetHeading && assetHeading.lines.length > 1, "Long asset headings wrap on portrait pages");
   pdf.setFont("helvetica", "bold"); pdf.setFontSize(12);
-  assert(assetHeading.lines.every(line => pdf.getTextWidth(line) <= 182.01), "Asset heading lines fit the portrait content width");
+  assert(assetHeading.lines.every(line => pdf.getTextWidth(line) <= 182.01), "Asset headings keep their original 14 mm inset");
   assert(pdf.internal.getNumberOfPages() > 1, "Exercise actual AutoTable pagination");
   const addressCells = cells.filter(cell => cell.section === "body" && cell.column === 3 && typeof cell.raw === "string" && addresses.includes(cell.raw));
   const short = addressCells.find(cell => cell.raw === addresses[0]);
@@ -84,19 +118,22 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
   assert(long.text.length > 1 && long.height > short.height, "Long addresses wrap and grow row height");
   assert(unbroken.length > 1, "Oversize address continues across portrait pages");
   assert.equal(unbroken.flatMap(cell => cell.text).join(""), addresses[2], "Never truncate even unbroken address text");
-  assert(addressCells.every(cell => Math.abs(cell.width - (zones ? 30 : 33)) < 0.01), "Address column never widens");
+  assert(addressCells.every(cell => Math.abs(cell.width - (zones ? 38 : 41)) < 0.01), "Wider address column remains capped");
   const zoneCells = cells.filter(cell => cell.section === "body" && cell.column === 4 && cell.raw === zoneName);
   if (zones) {
-    assert(zoneCells.length >= trips.length && zoneCells.every(cell => Math.abs(cell.width - 26) < 0.01), "Zones fit their allocated portrait column");
+    assert(zoneCells.length >= trips.length && zoneCells.every(cell => Math.abs(cell.width - 28) < 0.01), "Zones fit their allocated portrait column");
     assert(zoneCells.some(cell => cell.text.length > 1), "Long zone names wrap");
     assert(cells.some(cell => cell.section === "head" && cell.raw === "Zones"));
   } else assert.equal(zoneCells.length, 0, "No empty zone column when off");
-  assert(cells.every(cell => cell.x >= 13.99 && cell.x + cell.width <= 196.02), "All cells fit portrait page margins");
+  assert(cells.every(cell => cell.x >= 4.99 && cell.x + cell.width <= 205.02), "All table cells fit the 5 mm side margins");
+  assert(cells.some(cell => Math.abs(cell.x - 5) < 0.01) && cells.some(cell => Math.abs(cell.x + cell.width - 205) < 0.02), "The table actually uses the newly freed space on both sides");
+  assert(cells.every(cell => cell.y >= 0 && cell.y + cell.height <= pdf.internal.pageSize.getHeight()), "Wrapped cells stay within page height");
   assert.equal(links.length, trips.length, "Each trip retains one complete PDF URI annotation");
   assert(links.every(url => url.startsWith("https://my.geotab.com/synthetic-demo/#tripsHistory,")));
   assert(cells.some(cell => cell.raw && cell.raw.content === "Vehicle Total"), "Vehicle-period footer survives pagination");
   assert.equal(filename, "legacy_trip_history_12-10-2026_to_12-10-2026.pdf");
   assert(bytes.length > 10000 && bytes.subarray(0, 4).toString() === "%PDF");
+  assert(bytes.includes(Buffer.from("/Subtype /Image")), "Logo must actually be embedded in the PDF");
   console.log(file + " zones=" + zones + ": PASS — portrait, wrapped asset/zone/address rows, oversize pagination, 40 links, totals (" + pdf.internal.getNumberOfPages() + " pages)");
  }
 }

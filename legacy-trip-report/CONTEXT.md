@@ -70,7 +70,32 @@ uses driver home `driverGroups` (not `companyGroups`, `reportGroups` or security
 groups). Unknown drivers have no group membership, so appear only under All
 groups. Driver trips can span multiple assets, independent of asset group.
 
-## Current version: v1.6.0
+## Current version: v1.6.1
+
+**Why:** The portrait report still reserves 14 mm on both sides of the trip
+tables, leaving less space than necessary for addresses and optional zone names.
+
+**Approach:** Use 5 mm side margins for the Legacy trip tables only, expanding
+their total width from 182 to 200 mm. Redistribute that space among the columns
+while keeping portrait A4, text wrapping, all numerical results and links. The
+navy header/logo, black totals bar, KPI boxes, per-vehicle/driver heading inset,
+and page footers stay at their original coordinates. Top/bottom AutoTable margins
+and pagination rules are unchanged; wider cells may naturally alter wrapping and
+the resulting number of pages. A printer with a non-printable area larger than
+5 mm can still clip the table; this change does not move the original edge-to-edge
+navy header. The parent and standalone Legacy copies remain aligned. No changes
+to Activity, CSV, or preview. GitHub publication requested on 2026-11-05.
+
+Verification: all 228 report regression checks and four real jsPDF/AutoTable
+rendering smokes pass, both with and without Zones in both apps. The rendered
+fixture embeds the real logo; tests hold header/totals/KPI/footer positions and
+table content at 5–205 mm, including wrapped addresses, zone names and links.
+Baseline regression tests failed at the old side-margin/width assertions.
+Independent plan r3 and local code review PASS (GPT 6 Sol); physical-printer
+verification remains pending. GitHub publication requested by the user on
+2026-11-05; deployment evidence follows the push.
+
+### v1.6.0
 
 **Why:** Customers using existing Geotab zones want the zone name beside stops
 inside their boundaries; customers without zones should not have an empty column.
@@ -368,6 +393,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.6.0` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.6.1` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).

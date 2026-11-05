@@ -35,9 +35,17 @@ smart-insights/
 
 ---
 
-## Current version: v2.14.0
+## Current version: v2.14.1
 
 ### Changelog since v2.2.0
+- **v2.14.1** — Legacy Trip History PDF tables use 5 mm left/right margins,
+  providing 200 mm for eight columns (Zones off) or nine (Zones on). Decorative
+  header/logo, totals bar/KPIs, footer, and page's vertical layout rules retain
+  their existing positions. Text wrapping may naturally change page breaks.
+  Standalone Legacy v1.6.1. All 228 regression checks and four real PDF
+  rendering smokes pass; independent plan and code reviews PASS (GPT 6 Sol).
+  Physical-printer verification is pending. GitHub publication requested by
+  the user on 2026-11-05.
 - **v2.14.0** — Optional Zones slider in Legacy (off by default). Existing
   customer zone names appear after Stop Location in preview/CSV/PDF only when
   enabled. Uses native GetAddresses containment at exact stop coordinates plus

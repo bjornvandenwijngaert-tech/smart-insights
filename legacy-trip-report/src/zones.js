@@ -12,10 +12,10 @@ function legacyHeaders() {
   return headers;
 }
 function legacyPdfColumns() {
-  var widths = legacyZonesEnabled() ? [15, 16, 20, 30, 26, 15, 20, 20, 20] : [20, 18, 23, 33, 20, 23, 23, 22];
+  var widths = legacyZonesEnabled() ? [16, 16, 22, 38, 28, 16, 22, 22, 20] : [22, 20, 25, 41, 22, 24, 24, 22];
   var styles = {};
   widths.forEach(function (width, index) { styles[index] = { cellWidth: width }; });
-  return styles; // both layouts occupy 182mm inside portrait A4 margins
+  return styles; // both layouts occupy 200mm with 5mm table side margins on A4
 }
 function legacyZoneLabel(trip) {
   var key = legacyZoneKey(trip.stopPoint), snapshot = state.legacyZoneSnapshot;

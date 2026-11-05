@@ -726,6 +726,7 @@ function exportLegacyTripHistoryPdf() {
   var pageW  = doc.internal.pageSize.getWidth();
   var pageH  = doc.internal.pageSize.getHeight();
   var margin = 14;
+  var tableMargin = 5; // keep the header, totals, headings and footer at their original 14mm inset
 
   doc.setFillColor(GEOTAB_NAVY[0], GEOTAB_NAVY[1], GEOTAB_NAVY[2]);
   doc.rect(0, 0, pageW, 24, "F");
@@ -850,12 +851,12 @@ function exportLegacyTripHistoryPdf() {
         startY: yPos,
         head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + fmtLegacyDate(block.date), colSpan: columnCount }]].concat(headers),
         body: body,
-        margin: { left: margin, right: margin },
-        tableWidth: pageW - margin * 2,
+        margin: { left: tableMargin, right: tableMargin },
+        tableWidth: pageW - tableMargin * 2,
         rowPageBreak: "avoid",
         styles: { fontSize: 7.5, cellPadding: 1.5, overflow: "linebreak", valign: "middle", textColor: [45, 55, 72] },
         headStyles: { fillColor: [0, 120, 212], textColor: 255, fontStyle: "bold", fontSize: 8 },
-        // Both optional-column layouts fit 182mm; addresses and zones wrap.
+        // Both optional-column layouts fit 200mm; addresses and zones wrap.
         columnStyles: legacyPdfColumns(),
         didDrawCell: function (data) {
           var url = data.cell.raw && data.cell.raw.tripHistoryUrl;

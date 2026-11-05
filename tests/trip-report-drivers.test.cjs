@@ -302,8 +302,9 @@ for (const variant of variants.filter(v => v.legacy)) {
     assert.equal(pdf.internal.pageSize.getHeight(), 297);
     for (const table of pdf.tables) {
       assert.equal(table.styles.overflow, "linebreak");
-      assert.equal(table.columnStyles[3].cellWidth, 33, "Address width is capped");
-      assert.equal(Object.values(table.columnStyles).reduce((sum, column) => sum + column.cellWidth, 0), 182);
+      assert.equal(table.columnStyles[3].cellWidth, 41, "Address width is capped within the 5 mm table sides");
+      assert.equal(Object.values(table.columnStyles).reduce((sum, column) => sum + column.cellWidth, 0), 200);
+      assert.equal(table.margin.left, 5); assert.equal(table.margin.right, 5);
     }
     assert(pdf.links.every(link => link.width > 0 && link.height > 0 && !link.url.includes("&#39;")), "Clickable PDF links use complete raw URLs");
     const options = pdf.tables[0], raw = options.body.find(row => row[7] && row[7].tripHistoryUrl)[7];
@@ -1345,7 +1346,7 @@ for (const variant of variants.filter(v => v.legacy)) {
     assert.equal(pdf.internal.pageSize.getWidth(), 210); assert.equal(pdf.links.length, 6);
     for (const table of pdf.tables) {
       assert.equal(table.head[0][0].colSpan, 9); assert.equal(table.head[1][4], "Zones"); assert.equal(table.head[1].length, 9);
-      assert.equal(Object.values(table.columnStyles).reduce((sum, column) => sum + column.cellWidth, 0), 182);
+      assert.equal(Object.values(table.columnStyles).reduce((sum, column) => sum + column.cellWidth, 0), 200);
       for (const row of table.body) assert.equal(row.reduce((sum, cell) => sum + (cell && cell.colSpan || 1), 0), 9, "Every synthetic/detail/total row occupies nine columns");
     }
     assert(pdf.tables.flatMap(table => table.body).some(row => row[4] === "Depot <North> & Office; Warehouse Yard"));
