@@ -52,7 +52,7 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
       return text.call(this, value, x, y, options);
     };
     pdf.autoTable = function (tableOptions) {
-      tableLayouts.push({ margin: tableOptions.margin, tableWidth: tableOptions.tableWidth });
+      tableLayouts.push({ margin: tableOptions.margin, tableWidth: tableOptions.tableWidth, head: tableOptions.head });
       const originalHook = tableOptions.didDrawCell;
       autoTable.call(this, { ...tableOptions, didDrawCell(data) {
         if (originalHook) originalHook(data);
@@ -107,6 +107,8 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
   }
   assert(tableLayouts.length > 0);
   assert(tableLayouts.every(layout => layout.margin.left === 5 && layout.margin.right === 5 && layout.margin.top === undefined && layout.margin.bottom === undefined && Math.abs(layout.tableWidth - 200) < 0.01), "Only the table side margins change to 5 mm");
+  if (zones) assert(tableLayouts.every(layout => layout.head[1][4] === "Zone"), "PDFs use the singular column heading");
+  else assert(tableLayouts.every(layout => !layout.head[1].includes("Zone")), "Zones-off PDF has no Zone column");
   const assetHeading = headings.find(heading => heading.lines.join(" ") === assetName);
   assert(assetHeading && assetHeading.lines.length > 1, "Long asset headings wrap on portrait pages");
   pdf.setFont("helvetica", "bold"); pdf.setFontSize(12);
@@ -124,7 +126,7 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
   if (zones) {
     assert(zoneCells.length >= trips.length && zoneCells.every(cell => Math.abs(cell.width - 28) < 0.01), "Zones fit their allocated portrait column");
     assert(zoneCells.some(cell => cell.text.length > 1), "Long zone names wrap");
-    assert(cells.some(cell => cell.section === "head" && cell.raw === "Zones"));
+    assert(cells.some(cell => cell.section === "head" && cell.raw === "Zone"));
   } else assert.equal(zoneCells.length, 0, "No empty zone column when off");
   assert(cells.every(cell => cell.x >= 4.99 && cell.x + cell.width <= 205.02), "All table cells fit the 5 mm side margins");
   assert(cells.some(cell => Math.abs(cell.x - 5) < 0.01) && cells.some(cell => Math.abs(cell.x + cell.width - 205) < 0.02), "The table actually uses the newly freed space on both sides");

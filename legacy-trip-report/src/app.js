@@ -679,7 +679,7 @@ function exportReportCsv() {
   var zones = legacyZonesEnabled();
   var addrMap = state.legacyAddrMap || {};
   var rows = [["Vehicle", "Driver", "Date", "Start Time", "Distance (" + distUnit() + ")", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"]];
-  if (zones) rows[0].splice(7, 0, "Zones");
+  if (zones) rows[0].splice(7, 0, "Zone");
   var byDevice = state.legacyByDevice;
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];

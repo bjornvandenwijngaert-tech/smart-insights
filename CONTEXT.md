@@ -35,9 +35,14 @@ smart-insights/
 
 ---
 
-## Current version: v2.14.3
+## Current version: v2.14.4
 
 ### Changelog since v2.2.0
+- **v2.14.4** — The optional Legacy stop-zone column is labelled `Zone`
+  (singular) in the preview, CSV and portrait PDF. The switch remains `Zones`;
+  cell values, order and Zones-off outputs are unchanged. Standalone Legacy
+  v1.6.4. CSV clients matching the old `Zones` column header must update to
+  `Zone`. GitHub publication requested by the user on 2026-11-05.
 - **v2.14.3** — Legacy Zones preference reads the canonical AddInData ID that
   MyGeotab returns. v2.14.2 used the same ID with a noncanonical final base64
   character, so a successful read found the user's saved record but rejected

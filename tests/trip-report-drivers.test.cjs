@@ -1323,11 +1323,16 @@ for (const variant of variants.filter(v => v.legacy)) {
   test(variant.label + ": Zones defaults off with no extra requests or empty export columns", () => {
     const app = setup(); runReport(app, variant);
     assert.equal(app.hooks.legacyZonesEnabled(), false);
+    assert(app.elements["legacy-filters"].innerHTML.includes("<span>Zones</span>"), "Switch retains the plural label");
     assert(!app.calls.some(call => call.params.typeName === "Zone"));
     assert.equal(app.calls.filter(call => call.method === "GetAddresses").length, 1);
-    assert(!app.elements["report-output"].innerHTML.includes("<th>Zones</th>"));
-    app.hooks.exportReportCsv(); assert.equal(parseCsv(app.downloads[0])[0].length, 10);
-    app.hooks.exportLegacyTripHistoryPdf(); assert.equal(app.pdfs[0].tables[0].head[1].length, 8);
+    assert(!app.elements["report-output"].innerHTML.includes("<th>Zone</th>"));
+    app.hooks.exportReportCsv();
+    assert.equal(parseCsv(app.downloads[0])[0].length, 10);
+    assert(!parseCsv(app.downloads[0])[0].includes("Zone"));
+    app.hooks.exportLegacyTripHistoryPdf();
+    assert.equal(app.pdfs[0].tables[0].head[1].length, 8);
+    assert(!app.pdfs[0].tables[0].head[1].includes("Zone"));
   });
   test(variant.label + ": Zones toggle adds native containing zone names to preview CSV and portrait PDF", () => {
     const app = setup(); runReport(app, variant);
@@ -1337,16 +1342,16 @@ for (const variant of variants.filter(v => v.legacy)) {
     toggle(app, true); app.clock.flush();
     assert.equal(app.hooks.state.legacyZoneSnapshot.status, "ready");
     const html = app.elements["report-output"].innerHTML;
-    assert(html.includes("<th>Zones</th>")); assert(html.includes("Depot &lt;North&gt; &amp; Office; Warehouse Yard"));
+    assert(html.includes("<th>Zone</th>")); assert(html.includes("Depot &lt;North&gt; &amp; Office; Warehouse Yard"));
     assert.equal(app.hooks.legacyZoneLabel(app.data.trips[0]), "Depot <North> & Office; Warehouse Yard", "Overlaps dedupe by ID and retain hidden/non-stop-identifying zones from native containment");
     assert.equal(app.hooks.legacyZoneLabel(app.data.trips[2]), "", "Omitted zones means no match, not an error");
     app.hooks.exportReportCsv(); const csv = parseCsv(app.downloads[1]);
-    assert.equal(csv[0][7], "Zones"); assert(csv.every(row => row.length === 11));
+    assert.equal(csv[0][7], "Zone"); assert(csv.every(row => row.length === 11));
     assert.deepEqual(csv.map(row => row.filter((_, index) => index !== 7)), originalCsv, "All existing CSV data remains identical");
     app.hooks.exportLegacyTripHistoryPdf(); const pdf = app.pdfs[0];
     assert.equal(pdf.internal.pageSize.getWidth(), 210); assert.equal(pdf.links.length, 6);
     for (const table of pdf.tables) {
-      assert.equal(table.head[0][0].colSpan, 9); assert.equal(table.head[1][4], "Zones"); assert.equal(table.head[1].length, 9);
+      assert.equal(table.head[0][0].colSpan, 9); assert.equal(table.head[1][4], "Zone"); assert.equal(table.head[1].length, 9);
       assert.equal(Object.values(table.columnStyles).reduce((sum, column) => sum + column.cellWidth, 0), 200);
       for (const row of table.body) assert.equal(row.reduce((sum, cell) => sum + (cell && cell.colSpan || 1), 0), 9, "Every synthetic/detail/total row occupies nine columns");
     }
@@ -1357,7 +1362,7 @@ for (const variant of variants.filter(v => v.legacy)) {
     toggle(app, false); app.hooks.exportReportCsv(); assert.deepEqual(parseCsv(app.downloads.at(-1)), originalCsv);
     toggle(app, true); app.clock.flush(); assert.equal(app.calls.length, requestCount, "Ready memberships can be reused while toggling");
     app.hooks.filterReportByVehicle("bOther"); app.hooks.exportLegacyTripHistoryPdf(); assert.equal(app.pdfs.at(-1).links.length, 1);
-    runReport(app, variant); assert.equal(app.hooks.legacyZonesEnabled(), true); assert(app.elements["report-output"].innerHTML.includes("<th>Zones</th>"));
+    runReport(app, variant); assert.equal(app.hooks.legacyZonesEnabled(), true); assert(app.elements["report-output"].innerHTML.includes("<th>Zone</th>"));
   });
   test(variant.label + ": zone containment uses exact coordinates even when address keys round together", () => {
     const data = zoneFixture(); data.trips = data.trips.slice(0, 2);
@@ -1392,7 +1397,7 @@ for (const variant of variants.filter(v => v.legacy)) {
     assert.throws(() => app.hooks.exportReportCsv(), /Wait for zones/); assert.throws(() => app.hooks.exportLegacyTripHistoryPdf(), /Wait for zones/);
     toggle(app, false); assert.equal(app.elements["export-csv"].disabled, false);
     app.hooks.exportReportCsv(); assert.equal(parseCsv(app.downloads[0])[0].length, 10);
-    late(app.data.zones); app.clock.flush(); assert(!app.elements["report-output"].innerHTML.includes("<th>Zones</th>"));
+    late(app.data.zones); app.clock.flush(); assert(!app.elements["report-output"].innerHTML.includes("<th>Zone</th>"));
   });
   for (const failureType of ["denied", "timeout", "throw", "short", "malformed", "bad-reference", "number-row", "string-row", "array-row"]) {
     test(variant.label + ": zone " + failureType + " is visible and Retry recovers", () => {
@@ -1508,7 +1513,7 @@ test("parent: leaving a pending zone lookup restores other reports' shared CSV c
   app.hooks.state.api.call = original; app.hooks.runReport(); app.clock.flush();
   assert.equal(app.elements["export-csv"].disabled, false); app.hooks.exportReportCsv(); assert.equal(app.downloads.length, 1);
   late(app.data.zones); app.clock.flush(); assert.equal(app.elements["export-csv"].disabled, false);
-  assert(!app.elements["report-output"].innerHTML.includes("<th>Zones</th>"));
+  assert(!app.elements["report-output"].innerHTML.includes("<th>Zone</th>"));
 });
 
 // AddInData fixtures use the SDK sample's object-shaped details and per-database

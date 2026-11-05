@@ -71,7 +71,21 @@ uses driver home `driverGroups` (not `companyGroups`, `reportGroups` or security
 groups). Unknown drivers have no group membership, so appear only under All
 groups. Driver trips can span multiple assets, independent of asset group.
 
-## Current version: v1.6.3
+## Current version: v1.6.4
+
+**Why:** The optional stop-zone header said `Zones`, unlike the singular
+headings used by the rest of the report.
+
+**Approach:** Keep the switch labelled `Zones`, and label its optional preview,
+CSV and PDF column `Zone`. The same position, cell values, formatting, 5 mm PDF
+table margins and Trip History links remain unchanged. When the switch is off,
+the original 8-column PDF and 10-column CSV remain as before. The change to the
+enabled CSV header is intentional; any external code matching `Zones` must now
+match `Zone`. Both parent and standalone Legacy exports stay in sync. Local
+regressions and real PDF smokes cover both modes; GitHub publication was
+requested by the user on 2026-11-05.
+
+### v1.6.3
 
 **Why:** A user saw "Zones preference not saved" even though the matching
 user-owned AddInData record exists. A read-only authenticated Get showed the
@@ -467,6 +481,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.6.3` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.6.4` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).

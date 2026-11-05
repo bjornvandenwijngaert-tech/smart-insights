@@ -8,7 +8,7 @@ function legacyZoneKey(point) {
 function legacyZonesEnabled() { return !!legacyFilters().zones; }
 function legacyHeaders() {
   var headers = ["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Trip History"];
-  if (legacyZonesEnabled()) headers.splice(4, 0, "Zones");
+  if (legacyZonesEnabled()) headers.splice(4, 0, "Zone");
   return headers;
 }
 function legacyPdfColumns() {
