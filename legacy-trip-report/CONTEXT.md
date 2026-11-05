@@ -71,7 +71,34 @@ uses driver home `driverGroups` (not `companyGroups`, `reportGroups` or security
 groups). Unknown drivers have no group membership, so appear only under All
 groups. Driver trips can span multiple assets, independent of asset group.
 
-## Current version: v1.6.2
+## Current version: v1.6.3
+
+**Why:** A user saw "Zones preference not saved" even though the matching
+user-owned AddInData record exists. A read-only authenticated Get showed the
+SDK canonicalizes the addInId's last base64 character from `I` to `A` on the
+returned object; strict comparison rejected the valid row. A Get using the
+canonical ID found the same record. No agent writes were made.
+
+**Approach:** Change the one shared addInId constant to the returned canonical
+23-character value. Both standalone and parent read the existing record and
+Set its original record ID on the next user toggle; neither needs a migration
+or a second Add. Keep exact namespace, owner and schema checks. Synthetic
+fixtures model the observed response for both callers. Authenticated read-only
+consumer verification used a temporary standalone add-in tab. The hosted
+v1.6.2 preference script was verified byte-for-byte against the local module
+apart from the one corrected constant and its explanatory comment. With the
+canonical constant, one real `Get` restored the existing record's Zones-on
+choice and changed the consumer from `unsaved` to `ready`; no Add/Set/Remove
+was called. The temporary tab was closed. The user will test live saving after
+publication; no agent direct write to the customer database is authorized.
+The regression suite passes 253/253 tests and all four pinned-library PDF
+rendering smokes remain green.
+Independent plan r2 and local code review PASS (GPT 6 Sol); reviewed diff
+SHA-256 `e974d0acf42024e4b1ebda67923b2e2c377b4e381ecc9a992f5172149bd2d9b3`
+before this documentation-only receipt. The user will verify normal add-in
+saving after GitHub publication; no agent direct test write is authorized.
+
+### v1.6.2
 
 **Why:** The Zones switch reset on page refresh, even for customers who use
 zones every time. The dashboard's old unscoped localStorage fallback can bleed
@@ -440,6 +467,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.6.2` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.6.3` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).

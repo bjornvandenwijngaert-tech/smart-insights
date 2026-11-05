@@ -3,7 +3,9 @@
 // AddInData is scoped to a MyGeotab database, NOT intrinsically to a user.
 // Use a separate add-in namespace and validate the signed-in User.id on reads.
 // This boolean is logically per-user; it is not a security-private record.
-var LEGACY_ZONE_PREFERENCE_ID = "aDFiMDc2OGMtMmI5OS00NDI";
+// The SDK canonicalizes the final base64 character to A; use the returned ID
+// so strict namespace checks accept records already saved by v1.6.2.
+var LEGACY_ZONE_PREFERENCE_ID = "aDFiMDc2OGMtMmI5OS00NDA";
 
 function legacyPreferenceOwner() {
   return state.legacyFilters && state.legacyFilters.preference;

@@ -1548,6 +1548,32 @@ test("Zones preference restores for the same user/database across both add-ins, 
 
 for (const variant of variants.filter(v => v.legacy)) {
   const addinKey = variant.label === "parent legacy" ? "smartInsights" : "legacyTripHistory";
+  test(variant.label + ": restores the canonical AddInData ID returned by MyGeotab without creating a second record", () => {
+    // Sanitized shape from the live read-only Get: a valid user-owned object row,
+    // but MyGeotab normalizes the last character of the requested AddInData ID.
+    const canonical = "aDFiMDc2OGMtMmI5OS00NDA", app = loadApp(variant);
+    const original = app.hooks.state.api.call, operations = [];
+    app.hooks.state.dbName = "database-a";
+    app.hooks.state.legacyViewerUserId = "bViewerA";
+    app.hooks.state.legacyViewerLogin = "bviewera@example.test";
+    app.hooks.state.legacyUnitsResolved = true;
+    app.hooks.state.api.call = (method, params, success, failure) => {
+      if (params.typeName !== "AddInData") return original(method, params, success, failure);
+      operations.push({ method, params });
+      if (method === "Get") success([{ id: "pref-record", addInId: canonical, groups: [],
+        details: { version: 1, userId: "bViewerA", zonesEnabled: true, updatedAt: "2026-11-05T09:00:00Z" } }]);
+      else if (method === "Set") success(null);
+      else failure(new Error("An existing preference must not be added again"));
+    };
+    app.hooks.setupLegacyFilters(); app.clock.flush();
+    assert.equal(app.hooks.legacyFilters().zones, true, "Restore the existing record rather than rejecting its canonical ID");
+    assert.equal(app.hooks.legacyPreferenceOwner().status, "ready");
+    assert.deepEqual(operations.map(op => op.method), ["Get"], "Restoring does not write");
+    const input = app.elements["legacy-zones"]; input.checked = false; input.listeners.change.call(input);
+    assert.deepEqual(operations.map(op => op.method), ["Get", "Set"], "Update the existing record, never create a duplicate");
+    assert.equal(operations[1].params.entity.id, "pref-record");
+    assert.equal(operations[1].params.entity.addInId, canonical);
+  });
   test(variant.label + ": preference reads only exact user and namespace and preserves Set groups and extra details", () => {
     const app = preferencePage(variant, new Map());
     const id = app.hooks.LEGACY_ZONE_PREFERENCE_ID;
@@ -1587,7 +1613,7 @@ for (const variant of variants.filter(v => v.legacy)) {
   });
   test(variant.label + ": failed Get, malformed record and future version never become an Add", () => {
     for (const reply of ["denied", [{ id: "old", addInId: "wrong", details: { userId: "bViewerA", version: 1, zonesEnabled: true } }],
-      [{ id: "future", addInId: "aDFiMDc2OGMtMmI5OS00NDI", details: { userId: "bViewerA", version: 2, zonesEnabled: true } }]]) {
+      [{ id: "future", addInId: "aDFiMDc2OGMtMmI5OS00NDA", details: { userId: "bViewerA", version: 2, zonesEnabled: true } }]]) {
       const app = loadApp(variant), original = app.hooks.state.api.call, writes = [];
       app.hooks.state.dbName = "database-a"; app.hooks.state.legacyViewerUserId = "bViewerA";
       app.hooks.state.legacyViewerLogin = "bviewera@example.test"; app.hooks.state.legacyUnitsResolved = true;

@@ -35,9 +35,18 @@ smart-insights/
 
 ---
 
-## Current version: v2.14.2
+## Current version: v2.14.3
 
 ### Changelog since v2.2.0
+- **v2.14.3** — Legacy Zones preference reads the canonical AddInData ID that
+  MyGeotab returns. v2.14.2 used the same ID with a noncanonical final base64
+  character, so a successful read found the user's saved record but rejected
+  it as a namespace mismatch. Existing records are reused; no migration or
+  extra Add is required. Shared standalone Legacy v1.6.3. Agent verified the
+  error and the corrected consumer read-only: the existing record restored Zones
+  on with one Get, no Add/Set/Remove. Independent plan r2/code review PASS
+  (GPT 6 Sol), 253 tests and four PDF smokes pass. User will test saving after
+  GitHub publication; no agent direct test write to the customer database.
 - **v2.14.2** — Legacy Zones toggle now restores a per-User.id, per-database
   setting from a dedicated AddInData record (shared with standalone Legacy
   v1.6.2, across devices). No dashboard/shared/localStorage reuse. Permission,
