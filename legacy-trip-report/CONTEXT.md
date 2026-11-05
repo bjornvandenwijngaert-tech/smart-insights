@@ -26,6 +26,7 @@ legacy-trip-report/
     filters.js      — Shared page-memory catalog, selectors and guarded runner;
                       also loaded by the parent app
     filters.css     — Scoped selectors and wrapped preview address cells
+    zones.js        — Optional native zone containment, lookup lifecycle and columns
     styles.css      — Copied whole from the parent app (contains unused rules for
                       widgets/modals/map; safe, can be trimmed later)
     logo-data.js    — Geotab logo as a base64 data URL (GEOTAB_LOGO_DATAURL)
@@ -69,7 +70,57 @@ uses driver home `driverGroups` (not `companyGroups`, `reportGroups` or security
 groups). Unknown drivers have no group membership, so appear only under All
 groups. Driver trips can span multiple assets, independent of asset group.
 
-## Current version: v1.5.2
+## Current version: v1.6.0
+
+**Why:** Customers using existing Geotab zones want the zone name beside stops
+inside their boundaries; customers without zones should not have an empty column.
+
+**Approach:** A labelled native checkbox styled as a slider/switch defaults off.
+When enabled, a Zones column appears after Stop Location in preview, CSV and PDF.
+`GetAddresses.zones` supplies containing zone IDs; a read-only `Get Zone` lookup
+supplies existing current zone names. No zone creation or proximity guesses.
+Overlapping zones are sorted by name and listed together, deduplicated by ID.
+
+- Membership keys use exact stop longitude/latitude, not the rounded address
+  cache: points either side of a boundary must remain distinct. Zone lookup uses
+  currently active, accessible zone definitions, not historical zone geometry.
+  Missing GPS and lookup/name failures remain explicit; an actual no-match is
+  blank. The 10,000-zone response cap fails visibly rather than silently omitting
+  records. There are no Zone requests when the option is off.
+- One guarded lookup snapshot serves preview and both exports. The option stays
+  in page memory across runs; new runs refresh memberships. Ready results can be
+  reused when toggling off/on. While loading, enabled-zone exports are disabled;
+  turning off immediately restores them. Cancellation clears queued timers,
+  releases shared controls and exposes Retry instead of leaving Loading forever.
+  Failed lookups preserve the trip report with labelled zone-error cells.
+- The optional CSV has 11 columns; off retains the original 10-column schema.
+  PDF layouts use 182mm total width inside portrait A4: 8 columns off, 9 on. On
+  uses 30mm address and 26mm zone columns, with natural wrapping and growing rows.
+  Totals, departure recovery and Trip History links remain consistent in both.
+- Plan r2 independently PASS (GPT 6 Astra). All 228 regression tests and four
+  real jsPDF/AutoTable smokes pass (parent/standalone, Zones off/on).
+  An authenticated isolated browser tab ran the exact local source against 195
+  real trips: 52 stops matched customer zones, including 11 overlapping matches.
+  Preview/CSV/PDF matched native membership/name responses; totals were unchanged,
+  all 195 links remained, and the Zones-on PDF stayed portrait (13 pages).
+  The final corrected source was re-tested in the authenticated tab, including
+  on/off CSV/PDF audits. The native keyboard switch toggled both ways with trusted
+  Space events; background relay
+  key dispatch did not activate it, so the keyboard test used the foreground tab.
+  The temporary verification tab was closed; the original user tab was preserved.
+- Initial code review found two Medium issues: cancellation could restore stale
+  rows during a new run, and malformed individual address entries could appear
+  as no zone. New regression assertions reproduced both before their fixes;
+  the runner now clears the old preview and membership responses require objects.
+  Final independent re-review PASS (GPT 6 Astra): both findings accepted fixed,
+  all 228 tests/four PDF smokes independently rerun, plus cancellation and snapshot
+  probes. Reviewed diff SHA-256:
+  `4b20a4efb650fd138a31bc6125a4d6cddd0c5b79bb109296c4f8823abfd593c3`
+  (before this documentation receipt; implementation unchanged). This is local
+  review and live-source verification, not deployment or CI. GitHub publication
+  explicitly requested by the user on 2026-11-05.
+
+### v1.5.2
 
 **Why:** Live inspection found 184 resolved stop rows but two unknown Starting
 from rows: each vehicle's first fetched trip had no predecessor. Both departure
@@ -317,6 +368,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.5.2` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.6.0` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).

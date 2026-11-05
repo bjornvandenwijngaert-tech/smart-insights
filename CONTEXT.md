@@ -35,9 +35,17 @@ smart-insights/
 
 ---
 
-## Current version: v2.13.2
+## Current version: v2.14.0
 
 ### Changelog since v2.2.0
+- **v2.14.0** — Optional Zones slider in Legacy (off by default). Existing
+  customer zone names appear after Stop Location in preview/CSV/PDF only when
+  enabled. Uses native GetAddresses containment at exact stop coordinates plus
+  current Zone names, supporting overlapping zones. Lookup snapshots survive
+  filtering; reruns refresh them, cancellations release exports and expose Retry.
+  Both 8/9-column PDFs remain portrait A4 with wrapped addresses/zone names.
+  Shared `legacy-trip-report/src/zones.js`; standalone Legacy v1.6.0. GitHub
+  publication explicitly requested by the user on 2026-11-05.
 - **v2.13.2** — Legacy resolves missing first-departure locations through a
   device/time-scoped `LogRecord` boundary lookup, then the existing `GetAddresses`
   batch. Preview and PDF Starting from rows share the completed start snapshot.

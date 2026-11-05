@@ -13,6 +13,7 @@ const libraries = process.argv[2];
 assert(libraries, "Pass the directory containing the pinned jsPDF/AutoTable scripts");
 
 for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
+ for (const zones of [false, true]) {
   const elements = {
     "filter-from": { value: "2026-10-12" }, "filter-to": { value: "2026-10-12" }
   };
@@ -24,6 +25,7 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
   for (const library of ["jspdf.umd.min.js", "jspdf.plugin.autotable.min.js"]) {
     vm.runInContext(fs.readFileSync(path.join(libraries, library), "utf8"), context, { filename: library });
   }
+  vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/zones.js"), "utf8"), context, { filename: "legacy-trip-report/src/zones.js" });
   vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/filters.js"), "utf8"), context, { filename: "legacy-trip-report/src/filters.js" });
   vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context, { filename: file });
   const RealPdf = context.jspdf.jsPDF;
@@ -49,6 +51,7 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
     return pdf;
   };
   context.state.unitSystem = "Metric";
+  context.legacyFilters().zones = zones;
   context.state.server = "my.geotab.com"; context.state.dbName = "synthetic-demo";
   context.state.reportDriverMap = { bDriver: { name: "Example Driver", login: "driver@example.test" } };
   const addresses = ["Short stop", "123 Long Industrial Estate Road, Warehouse Seven, North Business Park, Example City, Example County, AB12 3CD, United Kingdom".repeat(4), "Unbroken".repeat(400)];
@@ -63,6 +66,9 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
   context.state.legacyAddrMap = {};
   trips.forEach((trip, index) => { context.state.legacyAddrMap[context.coordKey(trip.stopPoint)] = addresses[index] || addresses[0]; });
   context.state.legacyReportRange = { from: "2026-10-12", to: "2026-10-12" };
+  const zoneName = "Customer depot and distribution centre with a deliberately long zone name ".repeat(3).trim();
+  context.state.legacyZoneSnapshot = { status: "ready", labels: {} };
+  trips.forEach(trip => { context.state.legacyZoneSnapshot.labels[context.legacyZoneKey(trip.stopPoint)] = zoneName; });
   context.exportLegacyTripHistoryPdf();
   assert(pdf.internal.pageSize.getWidth() < pdf.internal.pageSize.getHeight(), "Export must be portrait");
   assert(Math.abs(pdf.internal.pageSize.getWidth() - 210) < 0.01, "A4 portrait width");
@@ -78,12 +84,19 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
   assert(long.text.length > 1 && long.height > short.height, "Long addresses wrap and grow row height");
   assert(unbroken.length > 1, "Oversize address continues across portrait pages");
   assert.equal(unbroken.flatMap(cell => cell.text).join(""), addresses[2], "Never truncate even unbroken address text");
-  assert(addressCells.every(cell => Math.abs(cell.width - 33) < 0.01), "Address column never widens");
+  assert(addressCells.every(cell => Math.abs(cell.width - (zones ? 30 : 33)) < 0.01), "Address column never widens");
+  const zoneCells = cells.filter(cell => cell.section === "body" && cell.column === 4 && cell.raw === zoneName);
+  if (zones) {
+    assert(zoneCells.length >= trips.length && zoneCells.every(cell => Math.abs(cell.width - 26) < 0.01), "Zones fit their allocated portrait column");
+    assert(zoneCells.some(cell => cell.text.length > 1), "Long zone names wrap");
+    assert(cells.some(cell => cell.section === "head" && cell.raw === "Zones"));
+  } else assert.equal(zoneCells.length, 0, "No empty zone column when off");
   assert(cells.every(cell => cell.x >= 13.99 && cell.x + cell.width <= 196.02), "All cells fit portrait page margins");
   assert.equal(links.length, trips.length, "Each trip retains one complete PDF URI annotation");
   assert(links.every(url => url.startsWith("https://my.geotab.com/synthetic-demo/#tripsHistory,")));
   assert(cells.some(cell => cell.raw && cell.raw.content === "Vehicle Total"), "Vehicle-period footer survives pagination");
   assert.equal(filename, "legacy_trip_history_12-10-2026_to_12-10-2026.pdf");
   assert(bytes.length > 10000 && bytes.subarray(0, 4).toString() === "%PDF");
-  console.log(file + ": PASS — portrait, wrapped asset headings/address rows, oversize pagination, 40 links, totals (" + pdf.internal.getNumberOfPages() + " pages)");
+  console.log(file + " zones=" + zones + ": PASS — portrait, wrapped asset/zone/address rows, oversize pagination, 40 links, totals (" + pdf.internal.getNumberOfPages() + " pages)");
+ }
 }

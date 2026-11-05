@@ -149,19 +149,23 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
   context.window = context; context.location = { hostname: "my.geotab.com", pathname: "/demo/" };
   let source = fs.readFileSync(path.join(root, variant.file), "utf8");
   if (variant.privateScope) source = source.replace(/\}\)\(\);\s*$/, "globalThis.reportTestHooks = {state, runActivityReport, runReport, getActivityCols, restoreActivityColumns, saveSettings, filterReportByVehicle, exportActivityCsv, exportActivityPdf, exportActivityExcel, reportDriverId, isUnassignedDriver, reportUserName, reportDriverInfo, resolveReportDrivers, groupReportDriverDays, buildActivityByDevice, fmtDateInput, applyRangeLength, localDayKey, activityVehicleIds, activityReportRange, activityRangeLabel, activityTotals, fmtActivityTime, activityLastTrip, activityDayEndpoints, activityDayElapsed, activitySummaryColumns, activitySummaryHeaders, activitySummaryGridStyle, activitySummaryNumbers, activityNumberText, activityDayValues, activityVehicleNumbers, renderActivityReport, activityWallDate, addActivityGroupedWorksheet, setupReports, cancelActivityReport: typeof cancelActivityReport === 'function' ? cancelActivityReport : undefined, activityCoordinate: typeof activityCoordinate === 'function' ? activityCoordinate : undefined, activityLocationKey: typeof activityLocationKey === 'function' ? activityLocationKey : undefined, createActivityRun: typeof createActivityRun === 'function' ? createActivityRun : undefined, activityLocationCall: typeof activityLocationCall === 'function' ? activityLocationCall : undefined, resolveActivityLocations: typeof resolveActivityLocations === 'function' ? resolveActivityLocations : undefined};\n})();");
-  if (!variant.privateScope) vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/filters.js"), "utf8"), context, { filename: "legacy-trip-report/src/filters.js" });
+  if (!variant.privateScope) {
+    vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/zones.js"), "utf8"), context, { filename: "legacy-trip-report/src/zones.js" });
+    vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/filters.js"), "utf8"), context, { filename: "legacy-trip-report/src/filters.js" });
+  }
   vm.runInContext(source, context, { filename: variant.file });
   const hooks = variant.privateScope ? context.reportTestHooks : context;
   hooks.state.api = { call(method, params, success, failure) {
     calls.push({ method, params: JSON.parse(JSON.stringify(params)), at: clock.now });
     if (method === "Get" && params.typeName === "Device") success(data.devices);
     else if (method === "Get" && params.typeName === "Group") success(data.groups || []);
+    else if (method === "Get" && params.typeName === "Zone") success(data.zones || []);
     else if (method === "Get" && params.typeName === "Trip") success(data.trips);
     else if (method === "Get" && params.typeName === "LogRecord") success(data.logRecords || []);
     else if (method === "Get" && params.typeName === "User") {
       if (denyDrivers && params.search.userIds) failure(new Error("User permission denied"));
       else success(data.users.filter(user => !params.search.userIds || params.search.userIds.includes(user.id)));
-    } else if (method === "GetAddresses") success(params.coordinates.map(pt => ({ formattedAddress: "Stop " + pt.x })));
+    } else if (method === "GetAddresses") success(params.coordinates.map(pt => ({ formattedAddress: "Stop " + pt.x, zones: data.zoneMembership ? data.zoneMembership(pt) : undefined })));
     else throw new Error("Unexpected API operation: " + method + " " + JSON.stringify(params));
   } };
   hooks.state.server = "my.geotab.com"; hooks.state.dbName = "demo"; hooks.state.unitSystem = "Metric";
@@ -1301,6 +1305,209 @@ for (const variant of variants.filter(v => v.legacy)) {
     });
   }
 }
+
+// Shape observed in authenticated GetAddresses: zones is omitted for no match,
+// or contains {id} references. Zone Get supplies names; values here are synthetic.
+function zoneFixture() {
+  const data = fixture();
+  data.zones = [{ id: "zDepot", name: "Depot <North> & Office", mustIdentifyStops: false, displayed: false }, { id: "zYard", name: "Warehouse Yard" }];
+  data.zoneMembership = point => point.x === 1 ? [{ id: "zYard" }, { id: "zDepot" }, { id: "zDepot" }]
+    : point.x === 2 ? [{ id: "zYard" }] : undefined;
+  return data;
+}
+for (const variant of variants.filter(v => v.legacy)) {
+  function setup(data = zoneFixture()) { const app = loadApp(variant, data); app.hooks.setupLegacyFilters(); return app; }
+  function toggle(app, checked) { const input = app.elements["legacy-zones"]; input.checked = checked; input.listeners.change.call(input); }
+  test(variant.label + ": Zones defaults off with no extra requests or empty export columns", () => {
+    const app = setup(); runReport(app, variant);
+    assert.equal(app.hooks.legacyZonesEnabled(), false);
+    assert(!app.calls.some(call => call.params.typeName === "Zone"));
+    assert.equal(app.calls.filter(call => call.method === "GetAddresses").length, 1);
+    assert(!app.elements["report-output"].innerHTML.includes("<th>Zones</th>"));
+    app.hooks.exportReportCsv(); assert.equal(parseCsv(app.downloads[0])[0].length, 10);
+    app.hooks.exportLegacyTripHistoryPdf(); assert.equal(app.pdfs[0].tables[0].head[1].length, 8);
+  });
+  test(variant.label + ": Zones toggle adds native containing zone names to preview CSV and portrait PDF", () => {
+    const app = setup(); runReport(app, variant);
+    const originalTrips = JSON.stringify(app.data.trips), originalAddresses = JSON.stringify(app.hooks.state.legacyAddrMap);
+    const totals = JSON.stringify(app.hooks.legacyTotals(app.hooks.state.reportData));
+    app.hooks.exportReportCsv(); const originalCsv = parseCsv(app.downloads[0]);
+    toggle(app, true); app.clock.flush();
+    assert.equal(app.hooks.state.legacyZoneSnapshot.status, "ready");
+    const html = app.elements["report-output"].innerHTML;
+    assert(html.includes("<th>Zones</th>")); assert(html.includes("Depot &lt;North&gt; &amp; Office; Warehouse Yard"));
+    assert.equal(app.hooks.legacyZoneLabel(app.data.trips[0]), "Depot <North> & Office; Warehouse Yard", "Overlaps dedupe by ID and retain hidden/non-stop-identifying zones from native containment");
+    assert.equal(app.hooks.legacyZoneLabel(app.data.trips[2]), "", "Omitted zones means no match, not an error");
+    app.hooks.exportReportCsv(); const csv = parseCsv(app.downloads[1]);
+    assert.equal(csv[0][7], "Zones"); assert(csv.every(row => row.length === 11));
+    assert.deepEqual(csv.map(row => row.filter((_, index) => index !== 7)), originalCsv, "All existing CSV data remains identical");
+    app.hooks.exportLegacyTripHistoryPdf(); const pdf = app.pdfs[0];
+    assert.equal(pdf.internal.pageSize.getWidth(), 210); assert.equal(pdf.links.length, 6);
+    for (const table of pdf.tables) {
+      assert.equal(table.head[0][0].colSpan, 9); assert.equal(table.head[1][4], "Zones"); assert.equal(table.head[1].length, 9);
+      assert.equal(Object.values(table.columnStyles).reduce((sum, column) => sum + column.cellWidth, 0), 182);
+      for (const row of table.body) assert.equal(row.reduce((sum, cell) => sum + (cell && cell.colSpan || 1), 0), 9, "Every synthetic/detail/total row occupies nine columns");
+    }
+    assert(pdf.tables.flatMap(table => table.body).some(row => row[4] === "Depot <North> & Office; Warehouse Yard"));
+    assert.equal(JSON.stringify(app.data.trips), originalTrips); assert.equal(JSON.stringify(app.hooks.state.legacyAddrMap), originalAddresses);
+    assert.equal(JSON.stringify(app.hooks.legacyTotals(app.hooks.state.reportData)), totals);
+    const requestCount = app.calls.length;
+    toggle(app, false); app.hooks.exportReportCsv(); assert.deepEqual(parseCsv(app.downloads.at(-1)), originalCsv);
+    toggle(app, true); app.clock.flush(); assert.equal(app.calls.length, requestCount, "Ready memberships can be reused while toggling");
+    app.hooks.filterReportByVehicle("bOther"); app.hooks.exportLegacyTripHistoryPdf(); assert.equal(app.pdfs.at(-1).links.length, 1);
+    runReport(app, variant); assert.equal(app.hooks.legacyZonesEnabled(), true); assert(app.elements["report-output"].innerHTML.includes("<th>Zones</th>"));
+  });
+  test(variant.label + ": zone containment uses exact coordinates even when address keys round together", () => {
+    const data = zoneFixture(); data.trips = data.trips.slice(0, 2);
+    data.trips[0].stopPoint = { x: 1.000001, y: 50 }; data.trips[1].stopPoint = { x: 1.000002, y: 50 };
+    data.zoneMembership = point => point.x === 1.000001 ? [{ id: "zDepot" }] : [];
+    const app = setup(data); toggle(app, true); runReport(app, variant);
+    assert.equal(app.hooks.coordKey(data.trips[0].stopPoint), app.hooks.coordKey(data.trips[1].stopPoint));
+    assert.equal(app.hooks.legacyZoneLabel(data.trips[0]), "Depot <North> & Office");
+    assert.equal(app.hooks.legacyZoneLabel(data.trips[1]), "");
+    const requests = app.calls.filter(call => call.method === "GetAddresses");
+    assert.equal(requests[0].params.coordinates.length, 1); assert.equal(requests[1].params.coordinates.length, 2);
+  });
+  test(variant.label + ": no existing zones avoids membership calls and missing GPS stays explicit", () => {
+    const data = zoneFixture(); data.zones = []; data.trips[0].stopPoint = null;
+    const app = setup(data); toggle(app, true); runReport(app, variant);
+    assert.equal(app.hooks.legacyZoneLabel(data.trips[0]), "(location unknown)");
+    assert.equal(app.hooks.legacyZoneLabel(data.trips[1]), "");
+    assert.equal(app.calls.filter(call => call.method === "GetAddresses").length, 1);
+    assert.equal(app.hooks.state.legacyZoneSnapshot.status, "ready");
+  });
+  test(variant.label + ": missing zone names remain explicit instead of becoming a false no-match", () => {
+    const data = zoneFixture(); data.zones[0].name = ""; data.zoneMembership = () => [{ id: "zDepot" }, { id: "inaccessible" }];
+    const app = setup(data); toggle(app, true); runReport(app, variant);
+    assert.equal(app.hooks.legacyZoneLabel(data.trips[0]), "Zone name unavailable; Zone name unavailable");
+  });
+  test(variant.label + ": pending zones block only zone-enabled exports and off immediately releases them", () => {
+    const app = setup(); runReport(app, variant); const original = app.hooks.state.api.call;
+    let late;
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "Zone" ? late = success : original(method, params, success, failure);
+    toggle(app, true);
+    assert.equal(app.elements["export-csv"].disabled, true); assert.equal(app.elements["export-pdf-legacy"].disabled, true);
+    assert.throws(() => app.hooks.exportReportCsv(), /Wait for zones/); assert.throws(() => app.hooks.exportLegacyTripHistoryPdf(), /Wait for zones/);
+    toggle(app, false); assert.equal(app.elements["export-csv"].disabled, false);
+    app.hooks.exportReportCsv(); assert.equal(parseCsv(app.downloads[0])[0].length, 10);
+    late(app.data.zones); app.clock.flush(); assert(!app.elements["report-output"].innerHTML.includes("<th>Zones</th>"));
+  });
+  for (const failureType of ["denied", "timeout", "throw", "short", "malformed", "bad-reference", "number-row", "string-row", "array-row"]) {
+    test(variant.label + ": zone " + failureType + " is visible and Retry recovers", () => {
+      const app = setup(); runReport(app, variant); const original = app.hooks.state.api.call;
+      let late;
+      app.hooks.state.api.call = (method, params, success, failure) => {
+        if (method === "GetAddresses") {
+          late = success;
+          if (failureType === "denied") failure(new Error("Denied"));
+          if (failureType === "throw") throw new Error("SDK error");
+          if (failureType === "short") success([]);
+          if (failureType === "malformed") success({ invalid: true });
+          if (failureType === "bad-reference") success(params.coordinates.map(() => ({ zones: [{}] })));
+          if (failureType === "number-row") success(params.coordinates.map(() => 42));
+          if (failureType === "string-row") success(params.coordinates.map(() => "bad response"));
+          if (failureType === "array-row") success(params.coordinates.map(() => []));
+        } else original(method, params, success, failure);
+      };
+      toggle(app, true); app.clock.flush();
+      assert.equal(app.hooks.state.legacyZoneSnapshot.status, "error");
+      assert(app.elements["report-output"].innerHTML.includes("Zone lookup failed"));
+      assert(!app.elements["legacy-zone-retry"].classList.contains("hidden")); assert.equal(app.elements["export-csv"].disabled, false);
+      assert.equal(app.hooks.state.reportData.length, 6);
+      const oldSnapshot = app.hooks.state.legacyZoneSnapshot;
+      late([]); assert.equal(app.hooks.state.legacyZoneSnapshot, oldSnapshot);
+      app.hooks.state.api.call = original; app.elements["legacy-zone-retry"].listeners.click(); app.clock.flush();
+      assert.equal(app.hooks.state.legacyZoneSnapshot.status, "ready"); assert(!app.elements["report-output"].innerHTML.includes("Zone lookup failed"));
+    });
+  }
+  for (const stage of ["active", "queued"]) {
+    test(variant.label + ": blur during " + stage + " zone lookup terminates Loading and permits Retry on focus", () => {
+      const app = setup(); runReport(app, variant); const original = app.hooks.state.api.call;
+      let late, membershipCalls = 0;
+      app.hooks.state.api.call = (method, params, success, failure) => {
+        if (params.typeName === "Zone" && stage === "active") late = success;
+        else { if (method === "GetAddresses") membershipCalls++; original(method, params, success, failure); }
+      };
+      toggle(app, true);
+      assert.equal(app.hooks.state.legacyZoneSnapshot.status, "loading");
+      const addin = app.context.geotab.addin[variant.label === "parent legacy" ? "smartInsights" : "legacyTripHistory"]();
+      addin.blur(); addin.focus(); if (late) late(app.data.zones); app.clock.flush();
+      assert.equal(membershipCalls, 0); assert.equal(app.hooks.state.legacyZoneSnapshot.status, "error");
+      assert(app.elements["report-output"].innerHTML.includes("Zone lookup interrupted"));
+      assert.equal(app.elements["export-csv"].disabled, false);
+      app.hooks.state.api.call = original; app.elements["legacy-zone-retry"].listeners.click(); app.clock.flush();
+      assert.equal(app.hooks.state.legacyZoneSnapshot.status, "ready");
+    });
+  }
+  test(variant.label + ": zone catalog cap cannot silently omit memberships", () => {
+    const data = zoneFixture(); data.zones = Array.from({ length: 10000 }, (_, i) => ({ id: "z" + i, name: "Zone " + i }));
+    const app = setup(data); toggle(app, true); runReport(app, variant);
+    assert.equal(app.hooks.state.legacyZoneSnapshot.status, "error");
+    assert.equal(app.calls.filter(call => call.method === "GetAddresses").length, 1);
+  });
+  test(variant.label + ": enabling Zones during a main report run waits for the completed snapshot", () => {
+    const app = setup(), original = app.hooks.state.api.call; let completeTrips;
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "Trip" ? completeTrips = success : original(method, params, success, failure);
+    app.hooks.runReport(); toggle(app, true);
+    assert.equal(app.calls.filter(call => call.params.typeName === "Zone").length, 0);
+    completeTrips(app.data.trips); app.clock.flush();
+    assert.equal(app.hooks.state.legacyZoneSnapshot.status, "ready");
+    assert(app.elements["report-output"].innerHTML.includes("Depot &lt;North&gt; &amp; Office"));
+  });
+  test(variant.label + ": a rerun during zone lookup never restores old rows beneath the new dates", () => {
+    const app = setup(); runReport(app, variant); const original = app.hooks.state.api.call;
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "Zone" ? undefined : original(method, params, success, failure);
+    toggle(app, true); assert(app.elements["report-output"].innerHTML.includes("TEST01"));
+    app.elements["filter-from"].value = "2026-11-01"; app.elements["filter-to"].value = "2026-11-02";
+    app.hooks.state.api.call = () => {};
+    app.hooks.runReport();
+    assert(!app.elements["report-output"].innerHTML.includes("TEST01"), "Cancellation must not resurrect the October rows during a November run");
+    assert(app.elements["report-output"].innerHTML.includes("Fetching data"));
+    const addin = app.context.geotab.addin[variant.label === "parent legacy" ? "smartInsights" : "legacyTripHistory"]();
+    addin.blur(); addin.focus(); app.clock.flush();
+    assert(!app.elements["report-output"].innerHTML.includes("TEST01"));
+    assert.equal(app.hooks.state.reportData.length, 0);
+    assert.equal(app.hooks.state.legacyByDevice, null);
+  });
+  test(variant.label + ": a rerun rejects obsolete zone callbacks and publishes only refreshed names", () => {
+    const app = setup(); runReport(app, variant); const original = app.hooks.state.api.call; let late;
+    app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "Zone" ? late = success : original(method, params, success, failure);
+    toggle(app, true);
+    app.data.zones = app.data.zones.map(zone => ({ ...zone, name: "Updated " + zone.name }));
+    app.hooks.state.api.call = original; runReport(app, variant);
+    const snapshot = app.hooks.state.legacyZoneSnapshot, count = app.calls.length;
+    late([{ id: "zDepot", name: "Stale" }]); app.clock.flush();
+    assert.equal(app.hooks.state.legacyZoneSnapshot, snapshot); assert.equal(app.calls.length, count);
+    assert(app.hooks.legacyZoneLabel(app.data.trips[0]).startsWith("Updated"));
+    app.hooks.resetLegacyPage(); assert.equal(app.hooks.legacyZonesEnabled(), false); assert.equal(app.hooks.state.legacyZoneSnapshot, null);
+  });
+  test(variant.label + ": zone batches are bounded and paced, and duplicate callbacks cannot finish twice", () => {
+    const data = zoneFixture(), originalTrip = data.trips[0];
+    data.trips = Array.from({ length: 401 }, (_, i) => ({ ...originalTrip, id: "t" + i,
+      start: new Date(Date.parse(originalTrip.start) + i * 60000).toISOString(),
+      stop: new Date(Date.parse(originalTrip.start) + i * 60000 + 4000).toISOString(), stopPoint: { x: i / 100, y: 50 } }));
+    const app = setup(data); runReport(app, variant); const before = app.calls.length, original = app.hooks.state.api.call;
+    app.hooks.state.api.call = (method, params, success, failure) => original(method, params, result => { success(result); if (method === "GetAddresses") { success([]); failure(new Error("late")); } }, failure);
+    toggle(app, true); app.clock.flush();
+    const requests = app.calls.slice(before).filter(call => call.method === "GetAddresses");
+    assert.deepEqual(requests.map(call => call.params.coordinates.length), [400, 1]);
+    assert(requests[1].at - requests[0].at >= 150);
+    assert.equal(app.hooks.state.legacyZoneSnapshot.status, "ready");
+    assert.equal(app.hooks.state.reportData.length, 401);
+  });
+}
+test("parent: leaving a pending zone lookup restores other reports' shared CSV control", () => {
+  const app = loadApp(variants[1], zoneFixture()); app.hooks.setupReports(); runReport(app, variants[1]);
+  const original = app.hooks.state.api.call; let late;
+  app.hooks.state.api.call = (method, params, success, failure) => params.typeName === "Zone" ? late = success : original(method, params, success, failure);
+  const toggle = app.elements["legacy-zones"]; toggle.checked = true; toggle.listeners.change.call(toggle);
+  assert.equal(app.elements["export-csv"].disabled, true);
+  app.elements["report-type"].value = "trips"; app.elements["report-type"].listeners.change.call(app.elements["report-type"]);
+  app.hooks.state.api.call = original; app.hooks.runReport(); app.clock.flush();
+  assert.equal(app.elements["export-csv"].disabled, false); app.hooks.exportReportCsv(); assert.equal(app.downloads.length, 1);
+  late(app.data.zones); app.clock.flush(); assert.equal(app.elements["export-csv"].disabled, false);
+  assert(!app.elements["report-output"].innerHTML.includes("<th>Zones</th>"));
+});
 
 test("release manifests, badges and local asset cache versions agree", () => {
   for (const folder of ["", "legacy-trip-report", "activity-report"]) {

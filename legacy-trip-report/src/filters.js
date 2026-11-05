@@ -4,17 +4,19 @@
 // a refresh/close resets choices, while Run and report-type changes do not.
 function legacyFilters() {
   if (!state.legacyFilters) state.legacyFilters = {
-    mode: "assets", groups: [], assets: { all: true, ids: {} }, drivers: { all: true, ids: {} },
+    mode: "assets", groups: [], zones: false, assets: { all: true, ids: {} }, drivers: { all: true, ids: {} },
     devices: [], users: [], groupMap: {}, ready: false, loading: false, error: false, showSystemGroups: false, waiters: []
   };
   return state.legacyFilters;
 }
 function cancelLegacyReport() {
+  var interruptedZones = cancelLegacyZones();
   // Run is shared by every report type, including guarded non-Legacy requests.
   document.getElementById("run-report").disabled = false;
   document.getElementById("run-report").textContent = "Run";
   state.reportEpoch = (state.reportEpoch || 0) + 1;
   state.legacyLoading = false;
+  if (interruptedZones && legacyIsActive() && state.legacyFullByDevice) applyLegacyFilters();
 }
 function clearLegacyResults() {
   state.legacyFullByDevice = null;
@@ -23,6 +25,8 @@ function clearLegacyResults() {
   state.legacyStartLocations = null;
   state.legacyStopInfo = null;
   state.legacyReportRange = null;
+  state.legacyZoneSnapshot = null;
+  updateLegacyZoneControls();
   ["export-csv", "export-pdf-legacy"].forEach(function (id) { document.getElementById(id).classList.add("hidden"); });
 }
 function resetLegacyPage() {
@@ -74,6 +78,7 @@ function setupLegacyFilters() {
   if (!wrap) return;
   if (wrap._legacyBound) {
     document.getElementById("legacy-mode").value = legacyFilters().mode;
+    setupLegacyZones();
     loadLegacyCatalog(function () {}); return;
   }
   wrap._legacyBound = true;
@@ -88,7 +93,10 @@ function setupLegacyFilters() {
     "<div class='legacy-picker-panel'><label><span id='legacy-search-label'>Find assets</span><input id='legacy-entity-search' type='search' class='select'></label>" +
     "<label class='legacy-check'><input id='legacy-select-all' type='checkbox'> Select all filtered</label>" +
     "<div id='legacy-entity-options' class='legacy-options'></div><p id='legacy-selection-count' role='status'></p></div></details>" +
+    "<label class='legacy-zone-toggle'><input id='legacy-zones' type='checkbox' role='switch'><span class='legacy-switch-track' aria-hidden='true'></span><span>Zones</span></label>" +
+    "<span id='legacy-zone-status' class='legacy-zone-status' role='status'></span><button id='legacy-zone-retry' type='button' class='btn btn-secondary hidden'>Retry zones</button>" +
     "<span id='legacy-filter-status' class='legacy-sr-only' role='status'></span>";
+  setupLegacyZones();
   document.getElementById("legacy-mode").value = legacyFilters().mode;
   document.getElementById("legacy-mode").addEventListener("change", function () {
     legacyFilters().mode = this.value;
@@ -335,6 +343,8 @@ function applyLegacyFilters() {
   document.getElementById("report-summary").classList.add("hidden");
   renderLegacyTripHistoryOutput(byDevice, state.legacyAddrMap || {});
   ["export-csv", "export-pdf-legacy"].forEach(function (id) { document.getElementById(id).classList.toggle("hidden", !trips.length); });
+  updateLegacyZoneControls();
+  if (legacyZonesEnabled() && !state.legacyZoneSnapshot) loadLegacyZones();
 }
 function legacyCoordinate(point) {
   return point && Number.isFinite(point.x) && Number.isFinite(point.y)
@@ -394,6 +404,8 @@ function resolveLegacyStartLocations(trips, call, done) {
 }
 function runLegacyTripHistoryReport(from, to, done) {
   cancelLegacyReport(); clearLegacyResults();
+  // Zone cancellation can render an interrupted prior result; a new run replaces it.
+  document.getElementById("report-output").innerHTML = "<p class='placeholder'>Fetching data...</p>";
   state.reportRaw = []; state.reportData = []; state.legacyLoading = true;
   document.getElementById("run-report").disabled = true;
   document.getElementById("run-report").textContent = "Loading...";

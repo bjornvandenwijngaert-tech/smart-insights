@@ -560,8 +560,10 @@ function legacyTotals(trips) {
 }
 function legacyTotalCells(label, trips) {
   var total = legacyTotals(trips);
-  return [label, fmtDist(total.distance, 2), fmtDurPrecise(total.driving), "", "",
+  var cells = [label, fmtDist(total.distance, 2), fmtDurPrecise(total.driving), "", "",
     fmtDurPrecise(total.idle), fmtDurPrecise(total.stopped), total.stops + " stops"];
+  if (legacyZonesEnabled()) cells.splice(4, 0, "");
+  return cells;
 }
 function legacyHtmlTotal(label, trips) {
   return "<tr style='font-weight:700;background:var(--surface-2)'>" + legacyTotalCells(label, trips).map(function (cell) {
@@ -570,6 +572,7 @@ function legacyHtmlTotal(label, trips) {
 }
 function renderLegacyTripHistoryOutput(byDevice, addrMap) {
   var output = document.getElementById("report-output");
+  var zones = legacyZonesEnabled(), headers = legacyHeaders(), columnCount = headers.length;
   var vids = Object.keys(byDevice);
   if (!vids.length) { output.innerHTML = "<p class='placeholder'>No trips found.</p>"; return; }
 
@@ -590,6 +593,7 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
           "<td>" + fmtDist(t.distance, 2) + "</td>" +
           "<td>" + fmtDurPrecise(driveMins) + "</td>" +
           "<td class='legacy-address'>" + esc(addressForPoint(t.stopPoint, addrMap)) + "</td>" +
+          (zones ? "<td class='legacy-zone'>" + esc(legacyZoneLabel(t)) + "</td>" : "") +
           "<td>" + fmtTime(t.stop) + "</td>" +
           "<td>" + fmtDurPrecise(idleMins) + "</td>" +
           "<td>" + stopStr + "</td>" +
@@ -606,18 +610,18 @@ function renderLegacyTripHistoryOutput(byDevice, addrMap) {
 
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
-      var startingFromHtml = "<tr><td colspan='8' style='font-weight:600;background:var(--surface-2)'>" + fmtLegacyDate(block.date) + " \u2014 Starting from: " + esc(legacyStartingAddress(block.rows[0], addrMap)) + "</td></tr>";
+      var startingFromHtml = "<tr><td colspan='" + columnCount + "' style='font-weight:600;background:var(--surface-2)'>" + fmtLegacyDate(block.date) + " \u2014 Starting from: " + esc(legacyStartingAddress(block.rows[0], addrMap)) + "</td></tr>";
       // "(Ignition On)" marks the day's first drive. We deliberately do NOT show a
       // duration here: the gap to the previous trip is overnight/parked time, not
       // idle, and Trip data has no pre-drive idle figure to show instead.
       var ignitionHtml = prevTrip
         // No Trip History cell here: this synthetic row marks the same trip whose
         // own row, directly below, already carries the link.
-        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='4'>(Ignition On)</td><td>\u2014</td><td></td><td></td></tr>"
+        ? "<tr style='color:var(--accent)'><td>" + fmtTime(firstTrip.start) + "</td><td colspan='" + (columnCount - 4) + "'>(Ignition On)</td><td>\u2014</td><td></td><td></td></tr>"
         : "";
 
       return "<div class='dd-table-wrap' style='margin-bottom:12px'><table class='dd-table legacy-table'>" +
-        "<thead><tr><th>Start Time</th><th>Distance</th><th>Duration</th><th>Stop Location</th><th>Arrival Time</th><th>Idle Duration</th><th>Stop Duration</th><th>Trip History</th></tr></thead>" +
+        "<thead><tr>" + headers.map(function (header) { return "<th>" + header + "</th>"; }).join("") + "</tr></thead>" +
         "<tbody>" + startingFromHtml + ignitionHtml + rowsHtml +
         totalsHtml +
         "</tbody></table></div>";
@@ -662,8 +666,11 @@ function filterReportByVehicle(vid) {
 function exportReportCsv() {
   var data = state.reportData;
   if (!data || !data.length) return;
+  if (!legacyZoneExportReady()) return;
+  var zones = legacyZonesEnabled();
   var addrMap = state.legacyAddrMap || {};
   var rows = [["Vehicle", "Driver", "Date", "Start Time", "Distance (" + distUnit() + ")", "Driving Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration"]];
+  if (zones) rows[0].splice(7, 0, "Zones");
   var byDevice = state.legacyByDevice;
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
@@ -674,12 +681,14 @@ function exportReportCsv() {
       var driveMins = parseDurationToMins(t.drivingDuration); if (driveMins == null) driveMins = durationMins(t.start, t.stop);
       var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
       var stopMins  = legacyStopMins(t);
-      rows.push([
+      var cells = [
         v.name, driverGroup.name, fmtLegacyDate(block.date), fmtTime(t.start),
         distVal(t.distance).toFixed(2), fmtDurPrecise(driveMins),
         addressForPoint(t.stopPoint, addrMap), fmtTime(t.stop),
         fmtDurPrecise(idleMins), stopMins != null ? fmtDurPrecise(stopMins) : ""
-      ]);
+      ];
+      if (zones) cells.splice(7, 0, legacyZoneLabel(t));
+      rows.push(cells);
     });
     });
     });
@@ -707,6 +716,8 @@ function exportLegacyTripHistoryPdf() {
   var byDevice = state.legacyByDevice;
   var addrMap  = state.legacyAddrMap || {};
   if (!byDevice || !Object.keys(byDevice).length) { alert("Run the report first."); return; }
+  if (!legacyZoneExportReady()) return;
+  var zones = legacyZonesEnabled(), columnCount = legacyHeaders().length;
   var range = state.legacyReportRange;
   var from = range.from;
   var to   = range.to;
@@ -768,7 +779,7 @@ function exportLegacyTripHistoryPdf() {
   ], yPos);
   yPos += 24;
 
-  var headers = [["Start Time", "Distance", "Duration", "Stop Location", "Arrival Time", "Idle Duration", "Stop Duration", "Trip History"]];
+  var headers = [legacyHeaders()];
 
   Object.keys(byDevice).forEach(function (vid) {
     var v = byDevice[vid];
@@ -791,14 +802,14 @@ function exportLegacyTripHistoryPdf() {
       var firstTrip = block.rows[0].trip;
       var prevTrip  = block.rows[0].prevTrip;
 
-      body.push([{ content: fmtLegacyDate(block.date) + "  Starting from: " + legacyStartingAddress(block.rows[0], addrMap), colSpan: 8, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
+      body.push([{ content: fmtLegacyDate(block.date) + "  Starting from: " + legacyStartingAddress(block.rows[0], addrMap), colSpan: columnCount, styles: { fontStyle: "bold", fillColor: [245, 245, 245] } }]);
 
       if (prevTrip) {
         // No duration on this row — the gap to the previous trip is overnight/
         // parked time, not idle (see HTML renderer note).
         body.push([
           fmtTime(firstTrip.start),
-          { content: "(Ignition On)", colSpan: 4, styles: { textColor: [217, 119, 6] } },
+          { content: "(Ignition On)", colSpan: columnCount - 4, styles: { textColor: [217, 119, 6] } },
           "\u2014",
           "", ""
         ]);
@@ -810,7 +821,7 @@ function exportLegacyTripHistoryPdf() {
         var idleMins  = parseDurationToMins(t.idlingDuration) || 0;
         var stopMins  = legacyStopMins(t);
         var url = tripHistoryUrl(vid, t);
-        body.push([
+        var cells = [
           fmtTime(t.start),
           fmtDist(t.distance, 2),
           fmtDurPrecise(driveMins),
@@ -819,7 +830,9 @@ function exportLegacyTripHistoryPdf() {
           fmtDurPrecise(idleMins),
           stopMins != null ? fmtDurPrecise(stopMins) : "\u2014",
           { content: url ? "Trip History" : "\u2014", tripHistoryUrl: url, styles: { textColor: [0, 90, 158] } }
-        ]);
+        ];
+        if (zones) cells.splice(4, 0, legacyZoneLabel(t));
+        body.push(cells);
       });
 
       var totalStyles = { fontStyle: "bold", fillColor: [245, 245, 245] };
@@ -835,21 +848,20 @@ function exportLegacyTripHistoryPdf() {
 
       doc.autoTable({
         startY: yPos,
-        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + fmtLegacyDate(block.date), colSpan: 8 }]].concat(headers),
+        head: [[{ content: v.name + " | Driver: " + driverGroup.name + " | " + fmtLegacyDate(block.date), colSpan: columnCount }]].concat(headers),
         body: body,
         margin: { left: margin, right: margin },
         tableWidth: pageW - margin * 2,
         rowPageBreak: "avoid",
         styles: { fontSize: 7.5, cellPadding: 1.5, overflow: "linebreak", valign: "middle", textColor: [45, 55, 72] },
         headStyles: { fillColor: [0, 120, 212], textColor: 255, fontStyle: "bold", fontSize: 8 },
-        // Fixed portrait widths total 182mm. Addresses wrap, never widen the table.
-        columnStyles: { 0: { cellWidth: 20 }, 1: { cellWidth: 18 }, 2: { cellWidth: 23 },
-          3: { cellWidth: 33 }, 4: { cellWidth: 20 }, 5: { cellWidth: 23 }, 6: { cellWidth: 23 }, 7: { cellWidth: 22 } },
+        // Both optional-column layouts fit 182mm; addresses and zones wrap.
+        columnStyles: legacyPdfColumns(),
         didDrawCell: function (data) {
           var url = data.cell.raw && data.cell.raw.tripHistoryUrl;
           // AutoTable retains raw metadata on split rows; do not link blank
           // continuation cells, headings, synthetic rows or total rows.
-          if (data.section === "body" && data.column.index === 7 && url &&
+          if (data.section === "body" && data.column.index === columnCount - 1 && url &&
               data.cell.text.some(function (text) { return text.trim().length > 0; })) {
             doc.link(data.cell.x, data.cell.y, data.cell.width, data.cell.height, { url: url });
           }
