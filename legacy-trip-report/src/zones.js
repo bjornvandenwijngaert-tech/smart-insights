@@ -43,6 +43,7 @@ function updateLegacyZoneControls() {
   if (status) status.textContent = !enabled || !snapshot ? "" : pending ? "Loading zones..." : snapshot.status === "error" ? snapshot.message + ". Retry zones." : "";
   var retry = document.getElementById("legacy-zone-retry");
   if (retry) retry.classList.toggle("hidden", !(enabled && snapshot && snapshot.status === "error"));
+  legacyPreferenceStatus();
 }
 function cancelLegacyZones() {
   var lookup = state.legacyZoneLookup;
@@ -61,9 +62,14 @@ function setupLegacyZones() {
   if (!toggle || toggle._zonesBound) { updateLegacyZoneControls(); return; }
   toggle._zonesBound = true;
   toggle.addEventListener("change", function () {
+    var pref = legacyPreferenceOwner();
+    if (state.legacyIdentityStale || state.legacyFocusChecking || (pref && (pref.status === "loading" || pref.status === "saving"))) {
+      updateLegacyZoneControls(); return;
+    }
     legacyFilters().zones = this.checked;
     if (!this.checked) cancelLegacyZones();
     applyLegacyFilters(); updateLegacyZoneControls();
+    legacyPreferenceSave();
   });
   document.getElementById("legacy-zone-retry").addEventListener("click", function () {
     if (legacyZonesEnabled() && state.legacyFullByDevice && !state.legacyLoading) loadLegacyZones();

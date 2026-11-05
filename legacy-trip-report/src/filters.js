@@ -1,7 +1,7 @@
 "use strict";
 
-// Shared by standalone Legacy and the parent app. Deliberately page-memory only:
-// a refresh/close resets choices, while Run and report-type changes do not.
+// Shared by standalone Legacy and the parent app. Asset/driver/group choices
+// stay in page memory; Zones is the one per-user setting backed by AddInData.
 function legacyFilters() {
   if (!state.legacyFilters) state.legacyFilters = {
     mode: "assets", groups: [], zones: false, assets: { all: true, ids: {} }, drivers: { all: true, ids: {} },
@@ -25,6 +25,7 @@ function clearLegacyResults() {
   state.legacyStartLocations = null;
   state.legacyStopInfo = null;
   state.legacyReportRange = null;
+  state.legacyVisibleResult = false;
   state.legacyZoneSnapshot = null;
   updateLegacyZoneControls();
   ["export-csv", "export-pdf-legacy"].forEach(function (id) { document.getElementById(id).classList.add("hidden"); });
@@ -32,6 +33,10 @@ function clearLegacyResults() {
 function resetLegacyPage() {
   cancelLegacyReport();
   state.initializationEpoch = (state.initializationEpoch || 0) + 1;
+  state.legacyIdentityStale = false;
+  state.legacyFocusChecking = false;
+  state.legacyPendingFocus = null;
+  state.legacyViewerUserId = null; state.legacyViewerLogin = ""; state.legacyUnitsResolved = false;
   state.legacyFilters = null; // initialize is also the database/principal boundary
   clearLegacyResults();
   state.reportRaw = []; state.reportData = []; state.reportDriverMap = {}; state.deviceMap = {};
@@ -74,12 +79,15 @@ function legacyIsActive() {
   return !type || type.value === "legacy-trip-history";
 }
 function setupLegacyFilters() {
+  if (state.legacyIdentityStale) { legacyPreferenceResume(); return; }
   var wrap = document.getElementById("legacy-filters");
   if (!wrap) return;
   if (wrap._legacyBound) {
     document.getElementById("legacy-mode").value = legacyFilters().mode;
     setupLegacyZones();
-    loadLegacyCatalog(function () {}); return;
+    legacyPreferenceStart();
+    if (!state.legacyFocusChecking) loadLegacyCatalog(function () {});
+    return;
   }
   wrap._legacyBound = true;
   wrap.innerHTML = "<details id='legacy-group-picker' class='legacy-picker'><summary id='legacy-group-summary'>All groups</summary>" +
@@ -95,8 +103,10 @@ function setupLegacyFilters() {
     "<div id='legacy-entity-options' class='legacy-options'></div><p id='legacy-selection-count' role='status'></p></div></details>" +
     "<label class='legacy-zone-toggle'><input id='legacy-zones' type='checkbox' role='switch'><span class='legacy-switch-track' aria-hidden='true'></span><span>Zones</span></label>" +
     "<span id='legacy-zone-status' class='legacy-zone-status' role='status'></span><button id='legacy-zone-retry' type='button' class='btn btn-secondary hidden'>Retry zones</button>" +
+    "<span id='legacy-zone-preference-status' class='legacy-zone-status' role='status'></span>" +
     "<span id='legacy-filter-status' class='legacy-sr-only' role='status'></span>";
   setupLegacyZones();
+  legacyPreferenceStart();
   document.getElementById("legacy-mode").value = legacyFilters().mode;
   document.getElementById("legacy-mode").addEventListener("change", function () {
     legacyFilters().mode = this.value;
@@ -143,7 +153,7 @@ function setupLegacyFilters() {
       if (picker && !picker.contains(event.target)) picker.open = false;
     });
   });
-  loadLegacyCatalog(function () {});
+  if (!state.legacyFocusChecking) loadLegacyCatalog(function () {});
 }
 function loadLegacyCatalog(done, failure, refresh) {
   var f = legacyFilters();
@@ -325,7 +335,7 @@ function updateLegacySelection() {
   document.getElementById("legacy-selection-count").textContent = count + " of " + eligible.length + " " + f.mode + " selected";
 }
 function applyLegacyFilters() {
-  if (!legacyIsActive() || state.legacyLoading || !state.legacyFullByDevice) return;
+  if (!legacyIsActive() || state.legacyIdentityStale || state.legacyFocusChecking || state.legacyLoading || !state.legacyFullByDevice) return;
   var f = legacyFilters(), allowed = {}, byDevice = {}, trips = [];
   legacyEntities().forEach(function (entity) { if (legacySelected(entity.id)) allowed[entity.id] = true; });
   Object.keys(state.legacyFullByDevice).forEach(function (vid) {
@@ -342,6 +352,7 @@ function applyLegacyFilters() {
   document.getElementById("report-summary").innerHTML = "";
   document.getElementById("report-summary").classList.add("hidden");
   renderLegacyTripHistoryOutput(byDevice, state.legacyAddrMap || {});
+  state.legacyVisibleResult = !!trips.length;
   ["export-csv", "export-pdf-legacy"].forEach(function (id) { document.getElementById(id).classList.toggle("hidden", !trips.length); });
   updateLegacyZoneControls();
   if (legacyZonesEnabled() && !state.legacyZoneSnapshot) loadLegacyZones();
@@ -403,6 +414,11 @@ function resolveLegacyStartLocations(trips, call, done) {
   next();
 }
 function runLegacyTripHistoryReport(from, to, done) {
+  if (state.legacyIdentityStale || state.legacyFocusChecking) {
+    document.getElementById("report-output").innerHTML = "<p class='placeholder'>Refresh the add-in after changing database or account.</p>";
+    document.getElementById("run-report").disabled = true;
+    return;
+  }
   cancelLegacyReport(); clearLegacyResults();
   // Zone cancellation can render an interrupted prior result; a new run replaces it.
   document.getElementById("report-output").innerHTML = "<p class='placeholder'>Fetching data...</p>";

@@ -127,6 +127,7 @@ geotab.addin.legacyTripHistory = function () {
         setupReports();
         loadUserUnits(function () {
           if (state.initializationEpoch !== initializationEpoch || state.api !== api) return;
+          legacyPreferenceAfterUser();
           document.getElementById("loading").classList.add("hidden");
           document.getElementById("main").classList.remove("hidden");
           if (callback) callback();
@@ -136,7 +137,9 @@ geotab.addin.legacyTripHistory = function () {
         if (callback) callback();
       }
     },
-    focus: function () {},
+    focus: function (freshApi, freshState) {
+      if (freshApi && freshState) legacyPreferenceFocus(freshApi, freshState);
+    },
     blur:  function () { cancelLegacyReport(); }
   };
 };
@@ -268,6 +271,12 @@ function loadUserUnits(cb) {
     if (!userName) { fallbackToSystemSettings(); return; }
     apiCall("Get", { typeName: "User", search: { name: userName } }, function (users) {
       if (!current()) return;
+      var viewer = users && users[0];
+      if (viewer && typeof viewer.id === "string" && viewer.id && viewer.id.length <= 128 &&
+          typeof viewer.name === "string" && viewer.name.toLowerCase() === userName.toLowerCase()) {
+        state.legacyViewerUserId = viewer.id;
+        state.legacyViewerLogin = viewer.name.toLowerCase();
+      }
       if (!users || !users.length || !applyUser(users[0])) fallbackToSystemSettings();
     }, fallbackToSystemSettings);
   }

@@ -165,6 +165,7 @@ geotab.addin.smartInsights = function () {
           if (state.initializationEpoch !== initializationEpoch || state.api !== api) return;
           setupNav();
           setupReports();
+          legacyPreferenceAfterUser();
           applyUnitLabels();         // stamp the user's units onto the static markup
           restoreActivitySettings(); // pre-fill Activity Report toolbar from last session
           setupEditMode();
@@ -187,7 +188,9 @@ geotab.addin.smartInsights = function () {
       }
       if (callback) callback();
     },
-    focus: function () {},
+    focus: function (freshApi, freshState) {
+      if (freshApi && freshState) legacyPreferenceFocus(freshApi, freshState);
+    },
     blur:  function () { if (state.activityRun) cancelActivityReport(); cancelLegacyReport(); }
   };
 };
@@ -246,6 +249,12 @@ function loadUserUnits(cb) {
     if (!userName) { fallbackToSystemSettings(); return; }
     apiCall("Get", { typeName: "User", search: { name: userName } }, function (users) {
       if (!current()) return;
+      var viewer = users && users[0];
+      if (viewer && typeof viewer.id === "string" && viewer.id && viewer.id.length <= 128 &&
+          typeof viewer.name === "string" && viewer.name.toLowerCase() === userName.toLowerCase()) {
+        state.legacyViewerUserId = viewer.id;
+        state.legacyViewerLogin = viewer.name.toLowerCase();
+      }
       if (!users || !users.length || !applyUser(users[0])) fallbackToSystemSettings();
     }, fallbackToSystemSettings);
   }
@@ -471,6 +480,7 @@ function setupReports() {
   document.getElementById("report-type").addEventListener("change", function () {
     cancelActivityReport();
     cancelLegacyReport();
+    state.legacyVisibleResult = false;
     document.getElementById("report-vehicle").classList.add("hidden");
     document.getElementById("export-csv").classList.add("hidden");
     document.getElementById("export-pdf-legacy").classList.add("hidden");
@@ -481,8 +491,10 @@ function setupReports() {
     document.getElementById("report-output").innerHTML = "<p class='report-placeholder'>Select a date range and click Run.</p>";
     // Show/hide date inputs based on type
     var type = this.value;
+    document.getElementById("report-output").classList.remove("hidden");
     document.getElementById("legacy-filters").classList.toggle("hidden", type !== "legacy-trip-history");
     if (type === "legacy-trip-history") setupLegacyFilters();
+    if (type === "legacy-trip-history") legacyPreferenceResume();
     var noDate = (type === "maintenance-upcoming");
     document.getElementById("filter-from").style.display = noDate ? "none" : "";
     document.getElementById("filter-to").style.display   = noDate ? "none" : "";

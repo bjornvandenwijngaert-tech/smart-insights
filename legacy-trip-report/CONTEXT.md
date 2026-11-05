@@ -27,6 +27,7 @@ legacy-trip-report/
                       also loaded by the parent app
     filters.css     — Scoped selectors and wrapped preview address cells
     zones.js        — Optional native zone containment, lookup lifecycle and columns
+    zone-preference.js — Per-user/per-database Zones preference via AddInData
     styles.css      — Copied whole from the parent app (contains unused rules for
                       widgets/modals/map; safe, can be trimmed later)
     logo-data.js    — Geotab logo as a base64 data URL (GEOTAB_LOGO_DATAURL)
@@ -70,7 +71,53 @@ uses driver home `driverGroups` (not `companyGroups`, `reportGroups` or security
 groups). Unknown drivers have no group membership, so appear only under All
 groups. Driver trips can span multiple assets, independent of asset group.
 
-## Current version: v1.6.1
+## Current version: v1.6.2
+
+**Why:** The Zones switch reset on page refresh, even for customers who use
+zones every time. The dashboard's old unscoped localStorage fallback can bleed
+between databases, so it is not a suitable model for this preference.
+
+**Approach:** Store one small Zones boolean per signed-in User.id in a separate
+AddInData namespace. The MyGeotab API already scopes AddInData to a database;
+we query by userId and verify the returned record's userId/addInId before using
+it. Both standalone Legacy and parent Smart Insights share this preference on
+the same database, including across devices. The preference is logically
+per-user, not security-private: other users with appropriate database access
+could read this harmless boolean. No email or raw customer data is persisted.
+
+- Loading disables the switch until identity and Get complete. If identity or
+  Get fails, the switch works for this page but displays an unsaved warning;
+  it never Add/Set-saves after an unsuccessful read. Add/Set is one-at-a-time,
+  and ambiguous timeout/failure stays unconfirmed with no automatic retry.
+  ViewOnly users cannot save AddInData, so their toggle works session-only.
+- Initialization clears old preference state. Every add-in focus verifies the
+  current database and account before showing old Legacy results or allowing
+  more preference writes, even if another parent report was selected. On
+  changed identity or failed focus verification, Legacy stops and requests a
+  refresh; it does not alter the parent dashboard's existing persistence.
+  The dashboard's separate cross-database bleed bug remains open.
+- Dedicated AddInData details: `{version:1,userId,zonesEnabled,updatedAt}`
+  using a stable 23-character SDK-form encoded GUID addInId. Existing clients
+  ignore the new namespace. New reads require object details/version 1 and
+  preserve Get entity groups/extra details on Set. Conflicting duplicate records
+  show an unsaved warning rather than trusting client clock order. No migration
+  or localStorage fallback.
+- Local regression checks cover same/different user/database, standalone and
+  parent sharing, exact identity, stale focus, read/write errors, ambiguous Add,
+  preserved groups and in-flight write/focus ordering. Authenticating a live
+  AddInData Get/Add/Set/Get is expressly reserved for the user's testing after
+  publication; do not read or write a live customer database for this task.
+  One earlier read-only probe before the user's restriction confirmed that
+  getSession returns a database name and the new namespace/Get query returns an
+  empty list in the currently signed-in database. It did **not** test saving.
+  Independent plan r7 and final local code review PASS (GPT 6 Sol); 251 tests
+  and four PDF smokes pass. Reviewed diff-plus-untracked-file SHA-256:
+  `ec601db8240557de552c9419e2fbbf541e3c4874f66328bf5a542ac1e2e4e1a3`
+  (before this docs receipt). Server-side write/read and cross-device restore
+  remain unverified. GitHub publication requested by the user on 2026-11-05
+  for their own testing; do not read/write the customer database for agent tests.
+
+### v1.6.1
 
 **Why:** The portrait report still reserves 14 mm on both sides of the trip
 tables, leaving less space than necessary for addresses and optional zone names.
@@ -393,6 +440,6 @@ The overnight rule below is deliberately kept out of them: it lives in
 - Intended to be hosted under the same GitHub Pages as Smart Insights, at the
   `legacy-trip-report/` subpath. Fully self-contained, so it can be lifted into
   its own repo with no code changes (only the config.json `url` would change).
-- Cache-bust: asset URLs use `?v=1.6.1` — increment on each release, and keep the
+- Cache-bust: asset URLs use `?v=1.6.2` — increment on each release, and keep the
   `version-badge` in index.html and `version` in config.json in step.
 - Publish only on explicit user request (same workflow as the parent app).

@@ -28,6 +28,7 @@ for (const file of ["legacy-trip-report/src/app.js", "src/app.js"]) {
   const logoFile = file.startsWith("legacy-trip-report/") ? "legacy-trip-report/src/logo-data.js" : "src/logo-data.js";
   vm.runInContext(fs.readFileSync(path.join(root, logoFile), "utf8"), context, { filename: logoFile });
   vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/zones.js"), "utf8"), context, { filename: "legacy-trip-report/src/zones.js" });
+  vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/zone-preference.js"), "utf8"), context, { filename: "legacy-trip-report/src/zone-preference.js" });
   vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/filters.js"), "utf8"), context, { filename: "legacy-trip-report/src/filters.js" });
   vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context, { filename: file });
   const RealPdf = context.jspdf.jsPDF;

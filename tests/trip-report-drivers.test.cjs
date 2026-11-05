@@ -151,6 +151,7 @@ function loadApp(variant, data = fixture(), denyDrivers = false) {
   if (variant.privateScope) source = source.replace(/\}\)\(\);\s*$/, "globalThis.reportTestHooks = {state, runActivityReport, runReport, getActivityCols, restoreActivityColumns, saveSettings, filterReportByVehicle, exportActivityCsv, exportActivityPdf, exportActivityExcel, reportDriverId, isUnassignedDriver, reportUserName, reportDriverInfo, resolveReportDrivers, groupReportDriverDays, buildActivityByDevice, fmtDateInput, applyRangeLength, localDayKey, activityVehicleIds, activityReportRange, activityRangeLabel, activityTotals, fmtActivityTime, activityLastTrip, activityDayEndpoints, activityDayElapsed, activitySummaryColumns, activitySummaryHeaders, activitySummaryGridStyle, activitySummaryNumbers, activityNumberText, activityDayValues, activityVehicleNumbers, renderActivityReport, activityWallDate, addActivityGroupedWorksheet, setupReports, cancelActivityReport: typeof cancelActivityReport === 'function' ? cancelActivityReport : undefined, activityCoordinate: typeof activityCoordinate === 'function' ? activityCoordinate : undefined, activityLocationKey: typeof activityLocationKey === 'function' ? activityLocationKey : undefined, createActivityRun: typeof createActivityRun === 'function' ? createActivityRun : undefined, activityLocationCall: typeof activityLocationCall === 'function' ? activityLocationCall : undefined, resolveActivityLocations: typeof resolveActivityLocations === 'function' ? resolveActivityLocations : undefined};\n})();");
   if (!variant.privateScope) {
     vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/zones.js"), "utf8"), context, { filename: "legacy-trip-report/src/zones.js" });
+    vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/zone-preference.js"), "utf8"), context, { filename: "legacy-trip-report/src/zone-preference.js" });
     vm.runInContext(fs.readFileSync(path.join(root, "legacy-trip-report/src/filters.js"), "utf8"), context, { filename: "legacy-trip-report/src/filters.js" });
   }
   vm.runInContext(source, context, { filename: variant.file });
@@ -1510,10 +1511,304 @@ test("parent: leaving a pending zone lookup restores other reports' shared CSV c
   assert(!app.elements["report-output"].innerHTML.includes("<th>Zones</th>"));
 });
 
+// AddInData fixtures use the SDK sample's object-shaped details and per-database
+// API context. They prove control flow, not the authenticated storage contract.
+function preferencePage(variant, saved, database = "database-a", userId = "bViewerA", data = fixture()) {
+  const app = loadApp(variant, data), original = app.hooks.state.api.call;
+  app.hooks.state.dbName = database;
+  app.hooks.state.legacyViewerUserId = userId;
+  app.hooks.state.legacyViewerLogin = userId.toLowerCase() + "@example.test";
+  app.hooks.state.legacyUnitsResolved = true;
+  app.hooks.state.api.getSession = cb => cb({ userName: app.hooks.state.legacyViewerLogin, database });
+  app.hooks.state.api.call = (method, params, success, failure) => {
+    if (params.typeName !== "AddInData") return original(method, params, success, failure);
+    const key = database + ":" + userId;
+    if (method === "Get") success(saved.has(key) ? [saved.get(key)] : []);
+    else if (method === "Add" || method === "Set") {
+      const entity = JSON.parse(JSON.stringify(params.entity));
+      entity.id = entity.id || "pref-" + saved.size;
+      saved.set(key, entity); success(method === "Add" ? entity.id : null);
+    } else failure(new Error("Unexpected storage operation"));
+  };
+  app.hooks.setupLegacyFilters(); app.clock.flush();
+  return app;
+}
+test("Zones preference restores for the same user/database across both add-ins, not other users or databases", () => {
+  const saved = new Map();
+  const standalone = preferencePage(variants[0], saved);
+  assert.equal(standalone.hooks.legacyFilters().zones, false);
+  const toggle = standalone.elements["legacy-zones"];
+  toggle.checked = true; toggle.listeners.change.call(toggle); standalone.clock.flush();
+  const reloaded = preferencePage(variants[1], saved);
+  assert.equal(reloaded.hooks.legacyFilters().zones, true, "A reload restores this user's saved choice in this database");
+  assert.equal(preferencePage(variants[0], saved, "database-b").hooks.legacyFilters().zones, false);
+  assert.equal(preferencePage(variants[1], saved, "database-a", "bViewerB").hooks.legacyFilters().zones, false);
+  assert.equal(saved.size, 1, "Only an explicit toggle writes a preference");
+});
+
+for (const variant of variants.filter(v => v.legacy)) {
+  const addinKey = variant.label === "parent legacy" ? "smartInsights" : "legacyTripHistory";
+  test(variant.label + ": preference reads only exact user and namespace and preserves Set groups and extra details", () => {
+    const app = preferencePage(variant, new Map());
+    const id = app.hooks.LEGACY_ZONE_PREFERENCE_ID;
+    assert.match(id, /^a[A-Za-z0-9_-]{22}$/, "The SDK requires a 23-character encoded GUID");
+    assert.equal(app.hooks.legacyPreferenceOwner().status, "ready");
+    const calls = [], original = app.hooks.state.api.call;
+    app.hooks.state.api.call = (method, params, success, failure) => {
+      if (params.typeName === "AddInData") calls.push({ method, params });
+      if (method === "Get" && params.typeName === "AddInData") success([
+        { id: "other", addInId: id, details: { userId: "bViewerB", version: 1, zonesEnabled: true } },
+        { id: "recent", addInId: id, groups: [{ id: "gParent" }], details: { userId: "bViewerA", version: 1, zonesEnabled: true, updatedAt: "2026-01-01T00:00:00Z", custom: "keep" } }
+      ]); else if (method === "Set" && params.typeName === "AddInData") success(null); else original(method, params, success, failure);
+    };
+    app.hooks.legacyPreferenceRead(app.hooks.legacyPreferenceOwner());
+    assert.equal(app.hooks.legacyFilters().zones, true);
+    assert.equal(app.hooks.legacyPreferenceOwner().record.id, "recent");
+    assert.match(calls[0].params.search.whereClause, /^userId = "bViewerA"$/);
+    const input = app.elements["legacy-zones"]; input.checked = false; input.listeners.change.call(input);
+    assert.equal(calls[1].method, "Set");
+    assert.deepEqual(calls[1].params.entity.groups, [{ id: "gParent" }]);
+    assert.equal(calls[1].params.entity.details.custom, "keep");
+    assert.equal(calls[1].params.entity.details.userId, "bViewerA");
+    assert.equal(calls[1].params.entity.details.zonesEnabled, false);
+    assert(!JSON.stringify(calls).includes("@example.test"), "Store opaque id, never email address");
+  });
+  test(variant.label + ": conflicting duplicate records never silently restore a clock-ordered user choice", () => {
+    const app = preferencePage(variant, new Map()), pref = app.hooks.legacyPreferenceOwner();
+    const original = app.hooks.state.api.call, id = app.hooks.LEGACY_ZONE_PREFERENCE_ID;
+    app.hooks.state.api.call = (method, params, success, failure) => method === "Get" && params.typeName === "AddInData" ? success([
+      { id: "first", addInId: id, details: { version: 1, userId: "bViewerA", zonesEnabled: true, updatedAt: "2030-01-01T00:00:00Z" } },
+      { id: "second", addInId: id, details: { version: 1, userId: "bViewerA", zonesEnabled: false, updatedAt: "2026-01-01T00:00:00Z" } }
+    ]) : original(method, params, success, failure);
+    app.hooks.legacyPreferenceRead(pref);
+    assert.equal(pref.status, "unsaved", "Conflicting duplicates need an explicit unsaved warning; client timestamps are not an ordering authority");
+    assert.equal(pref.record, null);
+    assert.equal(app.hooks.legacyFilters().zones, false);
+  });
+  test(variant.label + ": failed Get, malformed record and future version never become an Add", () => {
+    for (const reply of ["denied", [{ id: "old", addInId: "wrong", details: { userId: "bViewerA", version: 1, zonesEnabled: true } }],
+      [{ id: "future", addInId: "aDFiMDc2OGMtMmI5OS00NDI", details: { userId: "bViewerA", version: 2, zonesEnabled: true } }]]) {
+      const app = loadApp(variant), original = app.hooks.state.api.call, writes = [];
+      app.hooks.state.dbName = "database-a"; app.hooks.state.legacyViewerUserId = "bViewerA";
+      app.hooks.state.legacyViewerLogin = "bviewera@example.test"; app.hooks.state.legacyUnitsResolved = true;
+      app.hooks.state.api.call = (method, params, success, failure) => {
+        if (params.typeName !== "AddInData") return original(method, params, success, failure);
+        if (method !== "Get") writes.push(method);
+        else if (reply === "denied") failure(new Error("Access denied")); else success(reply);
+      };
+      app.hooks.setupLegacyFilters(); app.clock.flush();
+      assert.equal(app.hooks.legacyPreferenceOwner().status, "unsaved");
+      const input = app.elements["legacy-zones"]; input.checked = true; input.listeners.change.call(input); app.clock.flush();
+      assert.equal(app.hooks.legacyFilters().zones, true);
+      assert.deepEqual(writes, [], "Cannot Add after a failed/unknown read");
+      assert.match(app.elements["legacy-zone-preference-status"].textContent, /not saved/);
+    }
+  });
+  test(variant.label + ": ambiguous Add timeout keeps local choice unsaved and never retries Add", () => {
+    const app = preferencePage(variant, new Map());
+    const calls = [], original = app.hooks.state.api.call;
+    app.hooks.state.api.call = (method, params, success, failure) => {
+      if (params.typeName === "AddInData") { calls.push(method); if (method === "Get") success([]); }
+      else original(method, params, success, failure);
+    };
+    const toggle = app.elements["legacy-zones"]; toggle.checked = true; toggle.listeners.change.call(toggle);
+    assert.equal(toggle.disabled, true); app.clock.flush();
+    assert.equal(app.hooks.legacyPreferenceOwner().status, "unsaved");
+    assert.equal(app.hooks.legacyFilters().zones, true);
+    toggle.checked = false; toggle.listeners.change.call(toggle);
+    assert.deepEqual(calls, ["Add"]);
+  });
+  test(variant.label + ": focus holds in-flight Add outcome until the same user is verified", () => {
+    for (const responseOrder of ["save-first", "focus-first"]) {
+      const app = preferencePage(variant, new Map());
+      const original = app.hooks.state.api.call, methods = [];
+      let saveDone, sessionDone;
+      app.hooks.state.api.call = (method, params, success, failure) => {
+        if (params.typeName === "AddInData") {
+          methods.push(method);
+          if (method === "Add") saveDone = success; else original(method, params, success, failure);
+        } else original(method, params, success, failure);
+      };
+      const toggle = app.elements["legacy-zones"]; toggle.checked = true; toggle.listeners.change.call(toggle);
+      const api = app.hooks.state.api; api.getSession = done => { sessionDone = done; };
+      app.context.geotab.addin[addinKey]().focus(api, { database: "database-a" });
+      assert.equal(toggle.disabled, true);
+      assert(app.elements["report-output"].classList.contains("hidden"), "Old report is not visible while verifying identity");
+      if (responseOrder === "save-first") saveDone("pref-new");
+      sessionDone({ userName: "bviewera@example.test", database: "database-a" });
+      if (responseOrder === "focus-first") { assert.equal(toggle.disabled, true); saveDone("pref-new"); }
+      assert.equal(app.hooks.legacyPreferenceOwner().status, "ready");
+      assert.equal(toggle.disabled, false);
+      assert.equal(app.hooks.legacyFilters().zones, true);
+      assert.deepEqual(methods, ["Add"], "No focus Get may overwrite a pending local save");
+    }
+  });
+  test(variant.label + ": focus after a database or account change hides Legacy data and blocks old owner writes", () => {
+    for (const changed of ["database", "account", "timeout"]) {
+      const app = preferencePage(variant, new Map()); runReport(app, variant);
+      assert(app.elements["report-output"].innerHTML.includes("Vehicle One"));
+      const api = app.hooks.state.api, original = api.call, writes = [];
+      api.call = (method, params, success, failure) => { if (params.typeName === "AddInData" && method !== "Get") writes.push(method); original(method, params, success, failure); };
+      if (changed === "account") api.getSession = done => done({ userName: "bviewerb@example.test" });
+      if (changed === "timeout") api.getSession = () => {};
+      app.context.geotab.addin[addinKey]().focus(api, { database: changed === "database" ? "database-b" : "database-a" });
+      if (changed === "timeout") app.clock.flush();
+      assert.equal(app.hooks.state.legacyIdentityStale, true);
+      assert(!app.elements["report-output"].innerHTML.includes("Vehicle One"));
+      assert.equal(app.elements["run-report"].disabled, true);
+      assert.deepEqual(writes, []);
+    }
+  });
+  test(variant.label + ": exact session username and User.id are required before saving", () => {
+    for (const bad of ["other user", "missing id"]) {
+      const app = loadApp(variant), calls = [];
+      app.hooks.state.api = { getSession(done) { done({ userName: "viewer@example.test" }); },
+        call(method, params, success) {
+          calls.push(params.typeName);
+          if (params.typeName === "User") success([{ id: bad === "missing id" ? "" : "bOther", name: bad === "other user" ? "other@example.test" : "viewer@example.test", isMetric: true }]);
+          else success([]);
+        } };
+      app.hooks.loadUserUnits(() => {});
+      assert.equal(app.hooks.state.legacyViewerUserId || "", "");
+      app.hooks.legacyPreferenceAfterUser(); app.hooks.setupLegacyFilters();
+      const toggle = app.elements["legacy-zones"]; toggle.checked = true; toggle.listeners.change.call(toggle);
+      assert.equal(app.hooks.legacyFilters().zones, true);
+      assert(!calls.includes("AddInData"), "Unverified identity never queries or writes a user preference");
+    }
+  });
+}
+
+test("parent: focus before initial user lookup waits without treating an empty login as an account switch", () => {
+  const app = loadApp(variants[1]), original = app.hooks.state.api.call;
+  for (const name of ["setupNav", "applyUnitLabels", "restoreActivitySettings", "setupEditMode", "setupWidgetPicker", "setupModal", "setupParamEditor", "setupMap", "setupIncident", "loadSuggestions"]) app.hooks[name] = () => {};
+  app.hooks.restoreDashboard = done => done();
+  let userDone, sessionDone, sessionCalls = 0;
+  const api = { getSession(done) { sessionCalls++; if (sessionCalls === 1) done({ userName: "viewer@example.test" }); else sessionDone = done; },
+    call(method, params, success, failure) {
+      if (params.typeName === "User" && params.search.name) userDone = success;
+      else if (params.typeName === "AddInData") success([]);
+      else original(method, params, success, failure);
+    } };
+  const addin = app.context.geotab.addin.smartInsights();
+  let initialized = 0; addin.initialize(api, { database: "demo" }, () => initialized++);
+  assert.equal(initialized, 1, "Parent initialize callback precedes regional/user lookup");
+  addin.focus(api, { database: "demo" });
+  assert.equal(app.hooks.state.legacyIdentityStale, false);
+  assert.equal(app.hooks.state.legacyFocusChecking, true);
+  assert.equal(app.elements["run-report"].disabled, true);
+  userDone([{ id: "bViewerA", name: "viewer@example.test", isMetric: true }]);
+  assert.equal(sessionCalls, 2);
+  sessionDone({ userName: "viewer@example.test", database: "demo" }); app.clock.flush();
+  assert.equal(app.hooks.state.legacyIdentityStale, false);
+  assert.equal(app.hooks.state.legacyFocusChecking, false);
+  assert.equal(app.elements["run-report"].disabled, false);
+  assert.equal(app.hooks.legacyPreferenceOwner().status, "ready");
+});
+
+test("parent: focus on a different user while another report is selected never reveals the previous Legacy owner", () => {
+  const app = preferencePage(variants[1], new Map()); app.hooks.setupReports(); runReport(app, variants[1]);
+  app.elements["report-type"].value = "trips";
+  app.elements["report-type"].listeners.change.call(app.elements["report-type"]);
+  let finishSession; const api = { getSession(done) { finishSession = done; }, call: app.hooks.state.api.call };
+  app.context.geotab.addin.smartInsights().focus(api, { database: "database-a" });
+  assert.equal(app.hooks.state.legacyFocusChecking, true);
+  app.elements["report-type"].value = "legacy-trip-history";
+  app.elements["report-type"].listeners.change.call(app.elements["report-type"]);
+  assert.equal(app.elements["legacy-filters"].classList.contains("hidden"), true);
+  assert.equal(app.elements["report-output"].classList.contains("hidden"), true);
+  finishSession({ userName: "bviewerb@example.test" });
+  assert.equal(app.hooks.state.legacyIdentityStale, true);
+  assert.equal(app.elements["run-report"].disabled, true);
+  assert(!app.elements["report-output"].innerHTML.includes("Vehicle One"));
+});
+
+test("parent: returning to Legacy without rerunning never offers stale exports beside an empty report", () => {
+  const app = preferencePage(variants[1], new Map()); app.hooks.setupReports(); runReport(app, variants[1]);
+  assert.equal(app.elements["export-csv"].classList.contains("hidden"), false);
+  const type = app.elements["report-type"];
+  type.value = "trips"; type.listeners.change.call(type);
+  type.value = "legacy-trip-history"; type.listeners.change.call(type);
+  assert.match(app.elements["report-output"].innerHTML, /Select a date range/);
+  assert.equal(app.elements["export-csv"].classList.contains("hidden"), true);
+  assert.equal(app.elements["export-pdf-legacy"].classList.contains("hidden"), true);
+  app.context.geotab.addin.smartInsights().focus(app.hooks.state.api, { database: "database-a" });
+  assert.match(app.elements["report-output"].innerHTML, /Select a date range/, "A same-user focus cannot republish a cached Legacy result");
+  assert.equal(app.elements["export-csv"].classList.contains("hidden"), true);
+  assert.equal(app.elements["export-pdf-legacy"].classList.contains("hidden"), true);
+});
+
+for (const variant of variants.filter(v => v.legacy)) {
+  test(variant.label + ": restoring Zones off cancels an old lookup and re-enabling can fetch again", () => {
+    const saved = new Map(), app = preferencePage(variant, saved, "database-a", "bViewerA", zoneFixture());
+    const toggle = app.elements["legacy-zones"];
+    toggle.checked = true; toggle.listeners.change.call(toggle);
+    const original = app.hooks.state.api.call;
+    let late, held = false, membershipRequests = 0;
+    app.hooks.state.api.call = (method, params, success, failure) => {
+      if (method === "GetAddresses" && app.hooks.state.legacyZoneLookup) {
+        membershipRequests++;
+        if (!held) { held = true; late = success; return; }
+      }
+      original(method, params, success, failure);
+    };
+    app.hooks.runLegacyTripHistoryReport("2026-10-07", "2026-10-13", () => {});
+    app.clock.advance(2000); // finish paced GPS/address work; hold only zone membership
+    assert.equal(app.hooks.state.legacyZoneSnapshot.status, "loading");
+    const stored = saved.get("database-a:bViewerA");
+    stored.details.zonesEnabled = false; // a newer cross-device preference
+    app.context.geotab.addin[variant.label === "parent legacy" ? "smartInsights" : "legacyTripHistory"]()
+      .focus(app.hooks.state.api, { database: "database-a" });
+    assert.equal(app.hooks.legacyFilters().zones, false);
+    assert.notEqual(app.hooks.state.legacyZoneSnapshot && app.hooks.state.legacyZoneSnapshot.status, "loading");
+    assert.equal(app.elements["export-csv"].disabled, false);
+    late([]); assert.equal(app.hooks.legacyFilters().zones, false);
+    toggle.checked = true; toggle.listeners.change.call(toggle); app.clock.flush();
+    assert.equal(membershipRequests, 2, "Re-enabling issues a fresh containment lookup");
+    assert.equal(app.hooks.state.legacyZoneSnapshot.status, "ready");
+  });
+}
+
+test("parent: database focus cannot abandon an unrelated in-flight Trips report", () => {
+  const app = preferencePage(variants[1], new Map()); app.hooks.setupReports();
+  const type = app.elements["report-type"];
+  type.value = "trips"; type.listeners.change.call(type);
+  let finishTrips; const api = app.hooks.state.api, original = api.call;
+  api.call = (method, params, success, failure) => params.typeName === "Trip" ? finishTrips = success : original(method, params, success, failure);
+  app.hooks.runReport();
+  assert.equal(app.elements["run-report"].disabled, true);
+  const epoch = app.hooks.state.reportEpoch;
+  app.context.geotab.addin.smartInsights().focus(api, { database: "database-b" });
+  assert.equal(app.hooks.state.reportEpoch, epoch, "Only Legacy callbacks should be cancelled by this preference guard");
+  assert.equal(app.elements["run-report"].disabled, true);
+  finishTrips(app.data.trips);
+  assert.equal(app.elements["run-report"].disabled, false);
+  assert(app.elements["report-output"].innerHTML.includes("Vehicle One"));
+});
+
+for (const variant of variants.filter(v => v.legacy)) {
+  test(variant.label + ": focus cannot bind an old user's preference to a different session database if page state omits it", () => {
+    for (const pageState of [{}, { database: "database-a" }]) {
+      const app = preferencePage(variant, new Map()), calls = [];
+      const apiB = { getSession(done) { done({ userName: "bviewera@example.test", database: "database-b" }); },
+        call(method, params, success) { calls.push(method + ":" + params.typeName); success([]); } };
+      app.context.geotab.addin[variant.label === "parent legacy" ? "smartInsights" : "legacyTripHistory"]().focus(apiB, pageState);
+      assert.equal(app.hooks.state.legacyIdentityStale, true, "Session database must agree with the original AddInData owner");
+      assert.equal(app.elements["run-report"].disabled, true);
+      assert(!calls.some(call => call.endsWith(":AddInData")), "Cannot query or write the other database with the old user's key");
+    }
+  });
+}
+
 test("release manifests, badges and local asset cache versions agree", () => {
   for (const folder of ["", "legacy-trip-report", "activity-report"]) {
     const directory = path.join(root, folder), manifest = JSON.parse(fs.readFileSync(path.join(directory, "config.json"), "utf8")), html = fs.readFileSync(path.join(directory, "index.html"), "utf8");
     assert(html.includes('class="version-badge">v' + manifest.version + "</span>"), folder);
     for (const asset of ["styles.css", "logo-data.js", "app.js"]) assert(html.includes(asset + "?v=" + manifest.version), folder + "/" + asset);
+    if (folder !== "activity-report") {
+      const preference = html.indexOf("zone-preference.js?v=" + manifest.version);
+      const filters = html.indexOf("filters.js?v=" + manifest.version);
+      assert(preference > 0 && filters > preference && html.indexOf("app.js?v=" + manifest.version) > filters,
+        "Load the per-user preference controller before shared filters and app in " + (folder || "parent"));
+    }
   }
 });

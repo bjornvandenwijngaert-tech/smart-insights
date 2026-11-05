@@ -35,9 +35,18 @@ smart-insights/
 
 ---
 
-## Current version: v2.14.1
+## Current version: v2.14.2
 
 ### Changelog since v2.2.0
+- **v2.14.2** — Legacy Zones toggle now restores a per-User.id, per-database
+  setting from a dedicated AddInData record (shared with standalone Legacy
+  v1.6.2, across devices). No dashboard/shared/localStorage reuse. Permission,
+  identity and storage failures are visible and never saved under another
+  account or database; ambiguous writes are not retried automatically. The
+  parent's existing dashboard persistence bug remains separate. Local tests
+  pass; authenticated AddInData write/read is reserved for the user's own tests
+  after publication. Do not access a live customer database for verification.
+  GitHub publication requested by the user on 2026-11-05.
 - **v2.14.1** — Legacy Trip History PDF tables use 5 mm left/right margins,
   providing 200 mm for eight columns (Zones off) or nine (Zones on). Decorative
   header/logo, totals bar/KPIs, footer, and page's vertical layout rules retain
